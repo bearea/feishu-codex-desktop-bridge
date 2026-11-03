@@ -1,11 +1,11 @@
 ---
 name: feishu-codex-setup
-description: Install, verify, diagnose, or uninstall a Feishu bot that routes questions to native Codex Desktop chats on the user's Mac.
+description: Install, verify, update, diagnose, or uninstall a Feishu bot that routes chat messages and explicit document-comment mentions to native Codex Desktop chats on the user's Mac.
 ---
 
 # 飞书机器人接入 Codex 桌面版
 
-目标是完成可验收的链路：飞书私聊提问 → 本机 Codex 项目立即出现原生会话和提问 → 桌面版生成答案 → 飞书收到答复。安装不等于验收；最后必须使用安装者自己的飞书账号发送真实问题，并核对两端。
+目标是完成可验收的链路：飞书私聊提问 → 本机 Codex 项目出现原生会话和提问 → 桌面版生成答案 → 飞书收到答复。可选的云文档评论通道只处理明确 @ 机器人的评论，并在对应评论中答复。安装不等于验收；最后必须使用安装者自己的飞书账号发送真实问题，并核对两端。
 
 本 Skill 随插件分发，但插件缓存目录可能在更新时改变。首次安装时把公开仓库克隆到稳定的本机目录（默认 `~/Library/Application Support/FeishuCodexDesktopBridge`，用户已有合适工作区时沿用），并只从稳定目录执行 `scripts/setup.py`、读取 `README.md`、安装 LaunchAgent。不要把常驻服务指向插件缓存目录。始终使用中文沟通。
 
@@ -25,11 +25,24 @@ description: Install, verify, diagnose, or uninstall a Feishu bot that routes qu
 6. 运行 `python3 scripts/setup.py --check`；检查通过后运行 `python3 scripts/setup.py --install`，核对 LaunchAgent 正在运行、日志显示飞书事件监听已就绪。若检查失败，按具体错误修复并重试，不跳过检查。
 7. 让安装者在飞书给新机器人发一条产品测试问题。核对 Codex 项目中的新会话、原始提问、生成状态、最终答复以及飞书回信。再发追问验证续接；用“重新开始”验证新建会话。未完成这些观察时如实说明尚未验收。
 
+## 可选：云文档评论 @ 机器人
+
+用户要在飞书云文档评论中使用机器人时，先读 README 的“文档评论 @ 机器人”章节。此通道默认关闭；不要把普通文档编辑、协作者变更或未 @ 机器人的评论当成提问。
+
+1. 检查应用身份是否具备 `docs:document.comment:read`、`docs:document.comment:create`、`docx:document:readonly`，且已订阅并发布 `drive.notice.comment_add_v1`；确认机器人对测试文档有访问权。权限、事件订阅和文档授权是三个独立条件，按飞书后台实际状态逐项核对。
+2. 先用现有 `lark-cli event schema drive.notice.comment_add_v1 --json` 检查事件支持。若版本不支持且用户选择启用评论，按 README 使用固定提交的 `scripts/build_comment_cli.sh` 构建独立的临时 CLI；不要覆盖系统 CLI，也不要在上游 PR 提交发生变化时跳过脚本的校验。
+3. 在本机私有 `config.json` 设置 `comment_events_enabled: true` 和构建所得 `event_cli` 的绝对路径。运行 `python3 scripts/setup.py --check`，通过后重启已安装的 LaunchAgent，确认评论事件监听已就绪，且原有私聊监听仍正常。
+4. 在机器人可访问的 Docx 中新发一条明确 @ 机器人的测试评论，核对 Codex 新会话、原始评论、最终答复和飞书评论回信。旧评论不会自动补推。只完成权限或事件配置时，不得声称评论通道已验收。
+
 本机资料读取和跨 Codex 会话读取是可选的高级配置，默认关闭。只有用户明确选择本地资料目录后才运行 `scripts/install_read_profile.py`，先只检查再安装，随后复核实际只读范围和敏感答复审核。私人项目、凭证和原文外发限制不得因安装自动化而关闭。
 
 ## 可靠性边界
 
 飞书后台 UI 和 Codex Desktop 本地 IPC 可能变化；遇到不匹配时停止对应自动操作，读取当前页面或错误并定位。保留已完成的安装状态，避免重复创建应用、重复提交版本或启动两个监听同一应用的服务。macOS 用户会话、网络与本机桥接需要持续运行，Skill 本身不是常驻服务。
+
+## 更新
+
+插件缓存中的安装向导与稳定目录中的常驻桥接是两份内容。更新插件时刷新已配置的 GitHub 插件源，并核对插件版本；更新桥接时先检查稳定仓库的本地修改，再按项目约定 `git pull --rebase`，处理冲突并运行相关检查，最后重启 LaunchAgent。不能只刷新插件源就声称桥接程序已更新，也不能仅重启服务就声称已获得新代码。保留私有配置和 `.state/`。
 
 ## 卸载
 

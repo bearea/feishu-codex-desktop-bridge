@@ -2,7 +2,7 @@
 
 把飞书机器人收到的提问送进**本机 Codex Desktop 的原生会话**，在桌面项目中保留提问与答复，再由机器人回复飞书。私聊追问续接同一会话；`新会话：问题`、`重新开始：问题` 等明确表达会新开会话。文档评论中明确 @ 机器人时，可选的评论通道会把评论和机器人有权读取的 Docx 正文送入独立 Codex 会话。机主也可以在对应聊天会话中明确要求把一条回复发给飞书提问人。
 
-> **当前状态：实验性 macOS 方案。** 已在一台 Mac 上用真实飞书私聊验证“新会话 → Codex 项目 → 桌面版生成 → 飞书回复”和同一会话追问。Codex Desktop 的本地 IPC 不是公开稳定接口；自动归入左侧项目依赖当前 Codex app-server 的 `project/list`、`thread/start.projectId` 和 `thread/metadata/update`。仅克隆代码、填写飞书密钥，**不足以保证**在任何 Codex 安装上获得相同的项目显示效果。安装检查会验证已知本机前提，最后必须做真实消息验收。
+> **当前状态：实验性 macOS 方案。** 已在一台 Mac 上用真实飞书私聊验证“新会话 → Codex 项目 → 桌面版生成 → 飞书回复”和同一会话追问，也已用一条新发的 Docx 全文评论验证“@ 机器人 → Codex 会话 → 飞书评论答复”。其它文档类型、不同用户和全新 Mac 安装仍需分别验收。Codex Desktop 的本地 IPC 不是公开稳定接口；自动归入左侧项目依赖当前 Codex app-server 的 `project/list`、`thread/start.projectId` 和 `thread/metadata/update`。仅克隆代码、填写飞书密钥，**不足以保证**在任何 Codex 安装上获得相同的项目显示效果。安装检查会验证已知本机前提，最后必须做真实消息验收。
 
 ## 向导式安装预览
 
@@ -68,7 +68,7 @@ codex plugin add feishu-codex-desktop-bridge@feishu-codex-bridge
 
 ### 文档评论 @ 机器人（可选）
 
-这部分**尚未在当前飞书应用做端到端验收**。应用目前仅有消息事件和权限；版本审核中的配置也会锁住后台新增权限与事件。要启用时，在开发者后台额外开通应用身份的 `docs:document.comment:read`、`docs:document.comment:create`、`docx:document:readonly`，订阅 `drive.notice.comment_add_v1`，按后台流程发布并让机器人取得测试文档的访问权。读取整篇文档是为了回答“总结一下”等问题；若仅需处理评论文字，可在代码里关闭 Docx 正文读取并去掉对应权限。CLI 或 API 报错时以实际 `missing_scopes` 和文档授权状态为准。权限范围由飞书应用与文档共同控制，桥接不会借用机主的用户身份读取机器人无权访问的文档。
+评论通道默认关闭；当前实例已用一条新发的 Docx 全文评论完成端到端验收，但其它文档类型和新安装环境尚未实测。要启用时，在开发者后台额外开通应用身份的 `docs:document.comment:read`、`docs:document.comment:create`、`docx:document:readonly`，订阅 `drive.notice.comment_add_v1`，按后台流程发布并让机器人取得测试文档的访问权。这三个条件须分别生效；旧评论不会在发布后自动补推。读取整篇文档是为了回答“总结一下”等问题；若仅需处理评论文字，可在代码里关闭 Docx 正文读取并去掉对应权限。CLI 或 API 报错时以实际 `missing_scopes` 和文档授权状态为准。权限范围由飞书应用与文档共同控制，桥接不会借用机主的用户身份读取机器人无权访问的文档。
 
 当前稳定 `lark-cli` 1.0.96 还不认识此事件。本仓库提供临时构建脚本，从[飞书 CLI 的评论事件 PR](https://github.com/larksuite/cli/pull/2846)固定提交构建到仓库内 `.tools/`，不会覆盖系统 CLI。需安装 Go 与 Git；该 PR 更新后脚本会要求先审查新提交。上游正式发布支持该事件的 CLI 后，可直接改用正式版本。
 
@@ -77,6 +77,8 @@ bash scripts/build_comment_cli.sh
 ```
 
 在私有 `config.json` 里设置 `"comment_events_enabled": true`，并将 `"event_cli"` 设为构建输出的**绝对路径**。然后执行 `python3 scripts/setup.py --check` 并重启桥接。评论事件消费会向飞书登记订阅；测试时在有权访问的 Docx 文档评论中明确 `@福头 ✨ 总结一下`，确认 `feishu-message` 项目先出现新会话，再检查文档里出现回复。旧评论事件不会因之后开通权限而自动补发，请重新 @ 一次。若评论读取权限暂不可用，该评论会保留在待处理队列并定时重试，私聊问答继续运行。
+
+本机实测时，首次新评论遇到旧长连接没有收到事件；重新建立连接后，再发一条新评论完成了整条链路。若发布事件后没有收到推送，先检查评论监听日志和连接状态，再用**新评论**验收。全文评论的答案会另建一条引用原评论 ID 的评论；这与局部评论下直接回复的显示方式不同。
 
 | 飞书动作 | 当前处理 |
 | --- | --- |
@@ -114,6 +116,8 @@ python3 scripts/setup.py --install
 ```
 
 `--check` 验证 CLI、飞书 bot profile、本地项目登记与 Desktop IPC socket；它无法代替真实消息验收。`--install` 会生成 `~/Library/LaunchAgents/<launchd_label>.plist`，后台启动桥接，并将日志写到仓库 `logs/`。同一飞书应用只运行**一个**桥接进程。修改代码后可执行 `launchctl kickstart -k "gui/$(id -u)/<launchd_label>"` 重启。
+
+插件安装向导与上述常驻桥接是两份内容。仓库发布新版本后，已添加本仓库为插件源的用户可运行 `codex plugin marketplace upgrade feishu-codex-bridge` 刷新插件源，并重开桌面版确认安装向导版本；稳定目录里的桥接代码仍需单独更新：检查本地修改、执行 `git pull --rebase`、运行检查，再重启 LaunchAgent。刷新插件源本身不会替换运行中的 `bridge.py`。
 
 ## 重启与卸载
 
