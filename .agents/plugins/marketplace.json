@@ -1,0 +1,20 @@
+{
+  "name": "feishu-codex-bridge",
+  "plugins": [
+    {
+      "name": "feishu-codex-desktop-bridge",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity",
+      "interface": {
+        "displayName": "飞书接入 Codex 桌面版"
+      }
+    }
+  ]
+}

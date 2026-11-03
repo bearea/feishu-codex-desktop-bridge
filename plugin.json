@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "feishu-codex-desktop-bridge",
+  "version": "0.2.0",
+  "description": "Guided setup for a Feishu bot that answers through native Codex Desktop chats on macOS.",
+  "repository": "https://github.com/bearea/feishu-codex-desktop-bridge",
+  "extensions": {
+    "com.openai": {
+      "requires_local_executor": true,
+      "onboardingSkill": "./skills/setup/SKILL.md",
+      "interface": {
+        "displayName": "飞书接入 Codex 桌面版",
+        "shortDescription": "引导创建飞书机器人并安装本机桥接",
+        "developerName": "bearea",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "websiteURL": "https://github.com/bearea/feishu-codex-desktop-bridge"
+      }
+    }
+  }
+}

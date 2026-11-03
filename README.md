@@ -4,6 +4,25 @@
 
 > **当前状态：实验性 macOS 方案。** 已在一台 Mac 上用真实飞书私聊验证“新会话 → Codex 项目 → 桌面版生成 → 飞书回复”和同一会话追问。Codex Desktop 的本地 IPC 不是公开稳定接口；自动归入左侧项目依赖当前 Codex app-server 的 `project/list`、`thread/start.projectId` 和 `thread/metadata/update`。仅克隆代码、填写飞书密钥，**不足以保证**在任何 Codex 安装上获得相同的项目显示效果。安装检查会验证已知本机前提，最后必须做真实消息验收。
 
+## 向导式安装预览
+
+仓库现已包含一个 **Codex 本地插件的安装 Skill**。它会逐步检查本机、调用飞书官方 CLI 的新应用引导、在可用的浏览器自动化环境中配置机器人和消息权限、安装后台桥接，并做真实问答验收。插件是安装向导；消息到来时持续运行的仍是本机桥接服务。
+
+在 Mac 终端执行一条命令安装插件：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bearea/feishu-codex-desktop-bridge/main/install.command | zsh
+```
+
+该脚本只调用 Codex CLI 安装本仓库插件并打开 Codex；飞书应用创建、授权和首次验收由随后打开的设置向导继续完成。向导会把常驻桥接程序放到稳定的本机目录，不让服务依赖可能随插件升级变化的缓存路径。也可以手动执行等价的两条命令：
+
+```bash
+codex plugin marketplace add bearea/feishu-codex-desktop-bridge
+codex plugin add feishu-codex-desktop-bridge@feishu-codex-bridge
+```
+
+然后在 Codex 桌面版运行插件的“设置”向导。若当前桌面版未自动显示新插件，重新打开 Codex。这个向导**尚未在全新 Mac 和新飞书企业中完成端到端验收**，目前不能承诺单击安装即完全可用。飞书扫码登录、应用创建页面的本人确认、企业管理员审批以及首次授权必须由相应的人完成；向导会在这些节点继续等待或给出下一步。`lark-cli config init --new --name <profile>` 可引导创建新应用并安全保存凭证，但它不代替机器人能力、事件订阅和应用发布的后台配置。以下手动步骤仍可作为排障与回退路径。
+
 ## 这是什么项目
 
 这是独立编写的 Python 桥接程序，**不是某个开源项目的直接安装或改名**。实现桌面 IPC 时参考了 [codex-web 的桌面 IPC 客户端](https://github.com/i-am-BT/codex-web/blob/main/desktop-ipc-client.mjs)所公开的协议线索；飞书桥接方案也对照了 [lark-codex-desktop-bridge](https://github.com/ezra-y/lark-codex-desktop-bridge) 等项目。代码仅使用 Python 标准库，运行时需要 Codex Desktop/CLI 与飞书官方 `lark-cli`。
