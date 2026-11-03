@@ -1,0 +1,114 @@
+"""Protect owner-authored Feishu replies from accidental forwarding."""
+
+import json
+import tempfile
+import unittest
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import patch
+
+import bridge
+from manual_reply import classify_owner_message
+
+
+def user_turn(turn_id, text, status="completed"):
+    return {"id": turn_id, "status": status,
+            "items": [{"type": "userMessage", "content": [{"text": text}]}]}
+
+
+class ManualReplyTests(unittest.TestCase):
+    def test_classifier_respects_semantic_intent(self):
+        def run_result(send, reply):
+            def fake_run(argv, **_kwargs):
+                Path(argv[argv.index("-o") + 1]).write_text(json.dumps({
+                    "send": send, "reply_text": reply}), encoding="utf-8")
+                return type("Result", (), {"returncode": 0})()
+            return fake_run
+        with patch("manual_reply.subprocess.run", side_effect=run_result(True, "请先提供截图。")):
+            self.assertEqual(classify_owner_message("帮我回复他：请先提供截图。",
+                                                    model="gpt-6.1-sol"), "请先提供截图。")
+        with patch("manual_reply.subprocess.run", side_effect=run_result(False, "")):
+            self.assertIsNone(classify_owner_message("我该怎么回复他？", model="gpt-6.1-sol"))
+
+    def test_only_owner_turn_is_candidate(self):
+        turns = [
+            user_turn("feishu", "飞书提问人：张三\n飞书会话：oc_12345678\n飞书消息 ID：om_12345678\n\n问题"),
+            user_turn("review", "本机飞书答复审核，编号 abc。请审核"),
+            user_turn("pending", "帮我回复他：请稍等。", "inProgress"),
+            user_turn("owner", "帮我回复他：请提供截图。"),
+        ]
+        seen = set()
+        self.assertEqual(bridge.feishu_chat_from_history(turns), "oc_12345678")
+        self.assertEqual(bridge.manual_turn_candidates(turns, seen),
+                         [("owner", "帮我回复他：请提供截图。")])
+        self.assertEqual(seen, {"feishu", "review"})
+
+    def test_scan_queues_manual_reply_but_bootstrap_does_not_replay(self):
+        turns = [user_turn("feishu", "飞书提问人：张三\n飞书会话：oc_12345678\n飞书消息 ID：om_12345678\n\n问题"),
+                 user_turn("owner", "告诉他请发截图。")]
+        page = {"data": [{"id": "thread-1", "originator": "feishu_codex_bridge"}]}
+        history = {"thread": {"turns": turns}}
+
+        @contextmanager
+        def fake_app_server():
+            yield object()
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(bridge, "app_server", fake_app_server), \
+             patch.object(bridge, "send_rpc"), \
+             patch.object(bridge, "rpc_result", side_effect=[page, history, page, history]), \
+             patch.object(bridge, "classify_owner_message", return_value="请发截图。") as classify, \
+             patch.object(bridge, "save_outbox"), \
+             patch.object(bridge, "MANUAL_SEEN", Path(directory) / "seen.json"):
+            outbox = {}
+            seen = set()
+            bridge.scan_manual_replies(outbox, set(), seen, bootstrap=True)
+            self.assertFalse(outbox)
+            classify.assert_not_called()
+            seen.remove("owner")
+            bridge.scan_manual_replies(outbox, set(), seen, bootstrap=False)
+            self.assertEqual(outbox["manual:owner"]["chat_id"], "oc_12345678")
+            self.assertIn("请发截图。", outbox["manual:owner"]["answer"])
+
+    def test_review_notice_is_sent_once(self):
+        record = {"answer": "内部接口地址需要审核。", "question": "内部接口地址是什么？",
+                  "chat_id": "oc_12345678", "chat_type": "p2p", "sender_id": "ou_owner",
+                  "message_id": "om_12345678", "codex_thread_id": "thread-1", "sent": False}
+        outbox = {"om_12345678": record}
+        with patch.object(bridge, "review_answer", side_effect=bridge.ReviewPending("waiting")), \
+             patch.object(bridge, "send_text") as send, patch.object(bridge, "save_outbox"):
+            bridge.flush_outbox(outbox, set(), {})
+            bridge.flush_outbox(outbox, set(), {})
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.args[1], "review-wait")
+
+    def test_manual_send_uses_the_original_feishu_chat(self):
+        record = {"manual_reply": True, "answer": "【机主回复】\n请先提供截图。",
+                  "question": "告诉他请先提供截图。", "chat_id": "oc_12345678",
+                  "chat_type": "p2p", "sender_id": "ou_owner", "message_id": "manual:turn-1",
+                  "codex_thread_id": "thread-1", "source_excerpt_detected": False,
+                  "unsupported_tool": False, "sent": False}
+        outbox = {"manual:turn-1": record}
+        done = set()
+        with patch.object(bridge, "send_text") as send, \
+             patch.object(bridge, "save_outbox"), patch.object(bridge, "save_done"):
+            bridge.flush_outbox(outbox, done, {})
+        self.assertEqual(send.call_args.args[1:4], ("manual", "--chat-id", "oc_12345678"))
+        self.assertIn("manual:turn-1", done)
+
+    def test_manual_raw_code_is_withheld_without_notifying_feishu(self):
+        record = {"manual_reply": True, "answer": "【机主回复】\n```python\nprint(1)\n```",
+                  "question": "把代码发给他", "chat_id": "oc_12345678",
+                  "chat_type": "p2p", "sender_id": "ou_owner", "message_id": "manual:turn-2",
+                  "codex_thread_id": "thread-1", "source_excerpt_detected": False,
+                  "unsupported_tool": False, "sent": False}
+        outbox = {"manual:turn-2": record}
+        with patch.object(bridge, "send_text") as send, \
+             patch.object(bridge, "save_outbox"):
+            bridge.flush_outbox(outbox, set(), {})
+        send.assert_not_called()
+        self.assertTrue(record["withheld"])
+
+
+if __name__ == "__main__":
+    unittest.main()

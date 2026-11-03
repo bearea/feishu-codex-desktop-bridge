@@ -21,6 +21,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from desktop_ipc import DesktopIpc, DesktopIpcError
+from manual_reply import classify_owner_message
 from privacy import (PERSONAL_REFUSAL, export_decision, has_long_verbatim_overlap,
                      is_personal_question, normalize_answer, unsupported_tool_used)
 
@@ -52,6 +53,7 @@ DATA_DIR = ROOT / ".state"
 STATE = DATA_DIR / "replied_message_ids.json"
 OUTBOX = DATA_DIR / "pending_audits.json"
 THREADS = DATA_DIR / "live_threads.json"
+MANUAL_SEEN = DATA_DIR / "manual_reply_seen.json"
 PROFILE = setting("lark_profile", "futou_bot")
 BOT_DISPLAY_NAME = setting("bot_display_name", "福头 ✨")
 OWNER_OPEN_ID = setting("owner_open_id")
@@ -121,6 +123,14 @@ def load_threads() -> dict[str, str]:
         return {}
 
 
+def load_manual_seen() -> tuple[set[str], bool]:
+    try:
+        data = json.loads(MANUAL_SEEN.read_text())
+        return (set(data), True) if isinstance(data, list) else (set(), False)
+    except (FileNotFoundError, ValueError):
+        return set(), False
+
+
 def rpc_result(process: subprocess.Popen[str], request_id: int, notifications: list[dict] | None = None) -> dict:
     assert process.stdout is not None
     selector = selectors.DefaultSelector()
@@ -165,15 +175,21 @@ def thread_key(record: dict) -> str:
     return f"group:{record['chat_id']}:{topic}:{record['sender_id']}"
 
 
+def new_session_request(question: str) -> tuple[bool, str]:
+    text = question.strip()
+    if text in ("新会话", "重新开始", "换个话题", "从头开始", "开启新会话"):
+        return True, ""
+    for prefix in ("/新会话 ", "新会话：", "重新开始：", "换个话题：", "从头开始：", "开启新会话："):
+        if text.startswith(prefix):
+            return True, text[len(prefix):].strip()
+    return False, text
+
+
 def thread_title(record: dict) -> str:
     sender = record.get("sender_name") or (
         OWNER_DISPLAY_NAME if OWNER_OPEN_ID and record["sender_id"] == OWNER_OPEN_ID
         and OWNER_DISPLAY_NAME else record["sender_id"][-10:])
-    topic = record["question"].strip()
-    if topic.startswith("/新会话 "):
-        topic = topic[len("/新会话 "):].strip()
-    elif topic.startswith("新会话："):
-        topic = topic[len("新会话："):].strip()
+    _, topic = new_session_request(record["question"])
     topic = topic.replace("\n", " ")[:22]
     if record["chat_type"] == "group":
         return f"{BOT_DISPLAY_NAME}｜群聊 {record['chat_id'][-8:]}｜{sender}｜{topic}"
@@ -356,6 +372,8 @@ def assign_project(thread_id: str) -> None:
 
 
 def review_answer(message_id: str, record: dict, outbox: dict[str, dict]) -> str:
+    if record.get("control_ack"):
+        return record["answer"]
     if record.get("policy_refusal"):
         return PERSONAL_REFUSAL
     answer = record["answer"]
@@ -560,6 +578,114 @@ def send_text(message_id: str, purpose: str, target_type: str, target: str, text
         raise RuntimeError(f"Feishu send rejected: {payload.get('error', {}).get('type', 'unknown')}")
 
 
+def first_user_text(turn: dict) -> str:
+    for item in turn.get("items", []):
+        if item.get("type") == "userMessage":
+            return "\n".join(str(part.get("text") or "") for part in item.get("content", [])
+                             if isinstance(part, dict)).strip()
+    return ""
+
+
+def feishu_chat_from_history(turns: list[dict]) -> str | None:
+    """Only bridge-created chats with an original Feishu envelope can route replies."""
+    for turn in turns:
+        content = first_user_text(turn)
+        if not content.startswith("飞书提问人："):
+            continue
+        match = re.search(r"(?m)^飞书会话：(oc_[A-Za-z0-9]+)$", content)
+        if match and re.search(r"(?m)^飞书消息 ID：om_[A-Za-z0-9]+$", content):
+            return match.group(1)
+    return None
+
+
+def manual_turn_candidates(turns: list[dict], seen: set[str]) -> list[tuple[str, str]]:
+    candidates = []
+    for turn in turns:
+        turn_id = turn.get("id")
+        if not isinstance(turn_id, str) or turn_id in seen:
+            continue
+        content = first_user_text(turn)
+        if (not content or content.startswith("飞书提问人：")
+                or content.startswith("本机飞书答复审核，编号")
+                or content.startswith("<send_user_message_question_reply>")):
+            seen.add(turn_id)
+        elif turn.get("status") == "completed":
+            candidates.append((turn_id, content))
+    return candidates
+
+
+def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
+                        *, bootstrap: bool, checked_updates: dict[str, int] | None = None) -> None:
+    """Watch owner-written turns without opening or navigating Desktop windows."""
+    candidates: list[tuple[str, str, str, str]] = []
+    with app_server() as process:
+        cursor = None
+        request_id = 10
+        while True:
+            params = {"limit": 100, "cwd": str(SESSION_CWD)}
+            if cursor:
+                params["cursor"] = cursor
+            send_rpc(process, request_id, "thread/list", params)
+            page = rpc_result(process, request_id)
+            request_id += 1
+            for thread in page.get("data", []):
+                thread_id = thread.get("id")
+                if (thread.get("originator") != "feishu_codex_bridge"
+                        or not isinstance(thread_id, str)):
+                    continue
+                updated_at = thread.get("updatedAt")
+                if (not bootstrap and checked_updates is not None
+                        and checked_updates.get(thread_id) == updated_at):
+                    continue
+                send_rpc(process, request_id, "thread/read",
+                         {"threadId": thread_id, "includeTurns": True})
+                turns = rpc_result(process, request_id).get("thread", {}).get("turns", [])
+                request_id += 1
+                chat_id = feishu_chat_from_history(turns)
+                if not chat_id:
+                    continue
+                turn_candidates = manual_turn_candidates(turns, seen)
+                if checked_updates is not None and not turn_candidates and not any(
+                        turn.get("status") != "completed"
+                        and first_user_text(turn)
+                        and not first_user_text(turn).startswith(("飞书提问人：", "本机飞书答复审核，编号"))
+                        for turn in turns):
+                    checked_updates[thread_id] = updated_at
+                for turn_id, content in turn_candidates:
+                    if not bootstrap:
+                        candidates.append((thread_id, chat_id, turn_id, content))
+                    else:
+                        seen.add(turn_id)
+            cursor = page.get("nextCursor")
+            if not cursor:
+                break
+    if bootstrap:
+        save_private_json(MANUAL_SEEN, sorted(seen))
+        log("manual Feishu reply watcher initialized without replaying old chats")
+        return
+    for thread_id, chat_id, turn_id, content in candidates:
+        key = f"manual:{turn_id}"
+        if key in outbox or key in done:
+            seen.add(turn_id)
+            continue
+        reply = classify_owner_message(content, model=MODEL)
+        if reply:
+            answer = f"【{OWNER_DISPLAY_NAME or '机主'}回复】\n{reply}"
+            outbox[key] = {
+                "chat_id": chat_id, "chat_type": "p2p", "sender_id": OWNER_OPEN_ID or "local_owner",
+                "message_id": key, "root_id": None, "thread_id": None,
+                "codex_thread_id": thread_id, "question": content, "answer": answer,
+                "source_excerpt_detected": False, "unsupported_tool": False,
+                "create_time": "manual", "sent": False, "manual_reply": True,
+            }
+            save_outbox(outbox)
+            log(f"queued owner-authored Feishu reply from Codex turn {turn_id}")
+        seen.add(turn_id)
+        save_private_json(MANUAL_SEEN, sorted(seen))
+    if not candidates:
+        save_private_json(MANUAL_SEEN, sorted(seen))
+
+
 def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str]) -> None:
     waiting_threads: set[str] = set()
     for message_id, record in list(outbox.items()):
@@ -571,21 +697,39 @@ def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str
             save_outbox(outbox)
         pending_thread = record.get("codex_thread_id") or pending_thread
         if not record["sent"]:
+            if record.get("manual_reply") and (record.get("review_decision") == "deny"
+                    or export_decision(record["answer"], question=record.get("question", ""),
+                                       unsupported_tool=record.get("unsupported_tool", True)) == "block"
+                    or record.get("source_excerpt_detected")):
+                record["sent"] = True
+                record["withheld"] = True
+                save_outbox(outbox)
+                log(f"owner-authored Feishu reply withheld for {message_id}")
+                continue
             try:
                 export_text = review_answer(message_id, record, outbox)
             except ReviewPending as exc:
                 log(str(exc))
+                if not record.get("review_notice_sent"):
+                    send_text(message_id, "review-wait", "--chat-id", record["chat_id"],
+                              "正在等待审核回复，审核完成后会继续答复。")
+                    record["review_notice_sent"] = True
+                    save_outbox(outbox)
                 if pending_thread:
                     waiting_threads.add(pending_thread)
                 continue
-            send_text(message_id, "reply", "--chat-id", record["chat_id"], export_text)
+            send_text(message_id, "manual" if record.get("manual_reply") else "reply",
+                      "--chat-id", record["chat_id"], export_text)
             record["sent"] = True
             save_outbox(outbox)
         done.add(message_id)
         save_done(done)
         del outbox[message_id]
         save_outbox(outbox)
-        log(f"answered in Codex and Feishu for message {message_id}")
+        if record.get("withheld"):
+            log(f"owner-authored Feishu reply was not sent for {message_id}")
+        else:
+            log(f"answered in Codex and Feishu for message {message_id}")
 
 
 def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[str, str]) -> None:
@@ -626,10 +770,22 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
     key = thread_key({"chat_type": event["chat_type"], "chat_id": chat_id,
                       "root_id": event.get("root_id"), "thread_id": event.get("thread_id"),
                       "message_id": message_id, "sender_id": str(event.get("sender_id") or "unknown")})
-    if question.startswith("/新会话 ") or question.startswith("新会话："):
-        question = question.split(" ", 1)[1].strip() if question.startswith("/新会话 ") else question[4:].strip()
+    reset_session, question = new_session_request(question)
+    if reset_session:
         threads.pop(key, None)
         save_private_json(THREADS, threads)
+        if not question:
+            outbox[message_id] = {
+                "chat_id": chat_id, "sender_id": str(event.get("sender_id") or "unknown"),
+                "chat_type": event["chat_type"], "message_id": message_id,
+                "root_id": event.get("root_id"), "thread_id": event.get("thread_id"),
+                "question": "", "answer": "已开始新会话。下一条产品问题会进入新的 Codex 会话。",
+                "create_time": str(event.get("create_time") or "unknown"),
+                "sent": False, "control_ack": True,
+            }
+            save_outbox(outbox)
+            flush_outbox(outbox, done, threads)
+            return
     if not question:
         return
     log(f"processing message {message_id}")
@@ -664,6 +820,9 @@ def main() -> None:
     done = load_done()
     outbox = load_outbox()
     threads = load_threads()
+    manual_seen, manual_initialized = load_manual_seen()
+    manual_checked_updates: dict[str, int] = {}
+    next_manual_scan = 0.0
     while running:
         try:
             flush_outbox(outbox, done, threads)
@@ -715,6 +874,17 @@ def main() -> None:
                         except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
                             log(f"answer delivery pending: {exc}")
                             time.sleep(15)
+                    if time.monotonic() >= next_manual_scan:
+                        try:
+                            scan_manual_replies(outbox, done, manual_seen,
+                                                bootstrap=not manual_initialized,
+                                                checked_updates=manual_checked_updates)
+                            manual_initialized = True
+                            if outbox:
+                                flush_outbox(outbox, done, threads)
+                        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
+                            log(f"manual Feishu reply pending: {exc}")
+                        next_manual_scan = time.monotonic() + 15
                     continue
                 line = listener.stdout.readline()
                 if not line:
