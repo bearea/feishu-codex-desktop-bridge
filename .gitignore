@@ -1,0 +1,8 @@
+config.json
+.state/
+logs/
+feishu-message/
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/

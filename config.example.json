@@ -1,0 +1,11 @@
+{
+  "project_dir": "./feishu-message",
+  "lark_profile": "futou_bot",
+  "router_thread_id": "",
+  "bot_display_name": "福头 ✨",
+  "model": "gpt-6.1-sol",
+  "codex_bundle_id": "com.openai.codex",
+  "owner_open_id": "",
+  "owner_display_name": "",
+  "launchd_label": "cn.local.feishu-codex-bridge"
+}
