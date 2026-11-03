@@ -2,7 +2,7 @@
 
 把飞书机器人收到的文字问题送进**本机 Codex Desktop 的原生会话**，在桌面项目中保留提问与答复，再由机器人回复飞书。私聊追问续接同一会话；`新会话：` 或 `/新会话 ` 新开会话。
 
-> **当前状态：实验性 macOS 方案。** 已在一台 Mac 上用真实飞书私聊验证“新会话 → Codex 项目 → 桌面版生成 → 飞书回复”和同一会话追问。Codex Desktop 的本地 IPC 不是公开稳定接口；自动归入左侧项目还依赖该桌面环境提供 `list_projects` / `move_thread_to_project` 工具，并由一个 Codex 控制会话调用。仅克隆代码、填写飞书密钥，**不足以保证**在任何 Codex 安装上获得相同的项目显示效果。安装检查会验证已知本机前提，最后必须做真实消息验收。
+> **当前状态：实验性 macOS 方案。** 已在一台 Mac 上用真实飞书私聊验证“新会话 → Codex 项目 → 桌面版生成 → 飞书回复”和同一会话追问。Codex Desktop 的本地 IPC 不是公开稳定接口；自动归入左侧项目依赖当前 Codex app-server 的 `project/list`、`thread/start.projectId` 和 `thread/metadata/update`。仅克隆代码、填写飞书密钥，**不足以保证**在任何 Codex 安装上获得相同的项目显示效果。安装检查会验证已知本机前提，最后必须做真实消息验收。
 
 ## 这是什么项目
 
@@ -15,12 +15,12 @@
 ```text
 飞书用户 → im.message.receive_v1 → lark-cli event consume → bridge.py
   → 按飞书 chat_id / 群话题 / 发送者查找 Codex 会话
-  → 新会话：Codex app-server 创建空会话并退出，Desktop 加载并取得写入权
-  → 控制会话把新会话移入本地项目
+  → 新会话：Codex app-server 直接在本地项目中创建空会话并退出，Desktop 加载并取得写入权
   → desktop_ipc.py 向 Desktop 提交原始提问（真正的 userMessage）
   → Codex Desktop 生成答复，bridge.py 只读等待完成
-  → 本机出站检查：凭证/原始代码直接拦截，其他实质答复进入 Codex 审核会话
-  → 机主在 Codex 弹框选择允许后，lark-cli 才以 bot 身份回复原飞书聊天
+  → 本机出站检查：凭证/原始代码直接拦截；一般问答自动回复
+  → 使用本地项目或其他 Codex 会话资料时，在原 Codex 会话内等待机主审核
+  → 自动通过或机主选择允许后，lark-cli 以 bot 身份回复原飞书聊天
 ```
 
 `bridge.py` 把飞书消息 ID、提问人、时间和问题原文写入 Codex 输入。桌面版自己生成答复；外部 `app-server` **不执行答复轮次**，避免它和桌面版争夺会话写入权。会话/消息映射与待发答复保存在本机 `.state/`（已被 Git 忽略），机器人回信带幂等键。没有额外的问答抄送。
@@ -28,7 +28,7 @@
 ## 前提
 
 - macOS 上安装并登录 Codex Desktop，`codex` CLI 可从终端运行；桌面版可由 `com.openai.codex` bundle ID 启动（若不同，改 `codex_bundle_id`）。本机实测组合是 Python 3.12、Node 24、`lark-cli` 1.0.96 和 Codex CLI 0.166.0-alpha.5.1；这些是实测版本，非兼容性承诺。
-- 当前 Codex 桌面环境能使用 `list_projects`、`move_thread_to_project` 会话工具。普通 CLI 或独立 `app-server` 本身不能完成这里的**桌面左侧项目实时归属**。如果没有这两个工具，当前版本不能复现完整体验。
+- 当前 Codex app-server 支持 `project/list`、`thread/start.projectId` 和 `thread/metadata/update`。安装检查会验证项目已添加，真实消息验收会验证新会话归属；旧版本可能不支持。
 - 一台保持用户登录会话、网络和本机后台服务运行的 Mac。无需公网 webhook 域名。
 - 飞书企业自建应用，开启机器人能力，允许目标用户访问。
 
@@ -56,19 +56,18 @@ cd feishu-codex-desktop-bridge
 python3 scripts/setup.py --prepare
 ```
 
-`--prepare` 生成未跟踪的 `config.json` 和 `feishu-message/AGENTS.md`，并打印**归项目控制会话**的提示词。接着：
+`--prepare` 生成未跟踪的 `config.json` 和 `feishu-message/AGENTS.md`。接着：
 
 1. 在 Codex Desktop 把打印出的 `feishu-message` 绝对路径添加为**本地项目**。
-2. 新建一个独立的 Codex 控制会话，把脚本打印的提示词发给它。该会话只处理 `bind_project` JSON，不回答飞书问题。取得此会话的 thread ID，填入 `config.json` 的 `router_thread_id`。这是每台 Mac 自己的 ID，不能复制他人的。
-3. 检查 `config.json` 的 `lark_profile`、`project_dir`、`bot_display_name`、`model`、`codex_bundle_id` 与自己的环境一致。`owner_open_id`、`owner_display_name` 仅用于姓名查询失败时的标题回退；它们**不是**发信人白名单。
-4. 验证配置并安装 macOS LaunchAgent：
+2. 检查 `config.json` 的 `lark_profile`、`project_dir`、`bot_display_name`、`model`、`codex_bundle_id` 与自己的环境一致。`owner_open_id`、`owner_display_name` 仅用于姓名查询失败时的标题回退；它们**不是**发信人白名单。
+3. 验证配置并安装 macOS LaunchAgent：
 
 ```bash
 python3 scripts/setup.py --check
 python3 scripts/setup.py --install
 ```
 
-`--check` 验证 CLI、飞书 bot profile、项目目录与 Desktop IPC socket；它无法代替第 2 步的工具权限确认或真实消息验收。`--install` 会生成 `~/Library/LaunchAgents/<launchd_label>.plist`，后台启动桥接，并将日志写到仓库 `logs/`。同一飞书应用只运行**一个**桥接进程。修改代码后可执行 `launchctl kickstart -k "gui/$(id -u)/<launchd_label>"` 重启。
+`--check` 验证 CLI、飞书 bot profile、本地项目登记与 Desktop IPC socket；它无法代替真实消息验收。`--install` 会生成 `~/Library/LaunchAgents/<launchd_label>.plist`，后台启动桥接，并将日志写到仓库 `logs/`。同一飞书应用只运行**一个**桥接进程。修改代码后可执行 `launchctl kickstart -k "gui/$(id -u)/<launchd_label>"` 重启。
 
 ## 试点读取本地产品资料
 
@@ -81,7 +80,7 @@ python3 scripts/install_read_profile.py --project /绝对路径/产品项目 --b
 
 然后在私有 `config.json` 填入 `"permission_profile": "futou_nova_read"`、`"product_read_path": "/绝对路径/产品项目"`。如需让机器人检索其他 Codex 会话的**只读内容**，再设置 `"codex_history_read": true`。调整 `feishu-message/AGENTS.md`，明确只读资料和会话的用途，不允许把原始文件或会话内容直接放进答复。桥接会在每轮提问中显式提交命名权限，并在答复前核对 Desktop 实际执行记录；若 Desktop 未使用受限权限，就停止发送。设置后在飞书用 `新会话：...` 验证。其他会话工具、浏览器和 MCP 不受命令沙箱直接限制，因此还需要本机答复审核。
 
-试点期间，除固定的无关问题提示外，所有实质答复都必须在 `福头 ✨｜答复审核` 会话中由机主选择“允许发送”或“拒绝发送”；未选择时不回飞书。带凭证、密钥、连接串、整段代码或与工具读取结果较长逐字重合的答复会直接拦截，批准也不能放行。审核会话仅在发起新审核时打开，等待选择时不抢桌面焦点。这是保守的出站关口；自动识别不能证明所有敏感信息已被发现，机主仍需检查拟发送内容。Codex 读取本地文件时，相关片段可能进入模型上下文；“不发回飞书”不等于模型完全离线运行。
+试点期间，没有读取本地项目或其他 Codex 会话的普通产品问答通过安全检查后自动回复。只要当前会话曾使用只读工具查阅私有资料，就在**同一条飞书问答对应的 Codex 会话**中请机主选择“允许发送”或“拒绝发送”；未选择时不回飞书。带凭证、密钥、连接串、整段代码或与工具读取结果较长逐字重合的答复会直接拦截，批准也不能放行。审核弹框只在发起新审核时打开，等待选择时不抢桌面焦点。自动识别不能证明所有敏感信息已被发现；尤其是未经查阅工具而由模型自行生成的内容，仍需依赖项目指令与后续安全检查。Codex 读取本地文件时，相关片段可能进入模型上下文；“不发回飞书”不等于模型完全离线运行。
 
 ## 使用与验收
 
@@ -90,18 +89,18 @@ python3 scripts/install_read_profile.py --project /绝对路径/产品项目 --b
 3. 再发一条普通追问，确认它追加到**同一个 Codex 会话**，且飞书收到第二次答复。
 4. 用另一名员工及群聊重复测试（如果你打算开放这些场景）。目前仓库所依据的实测只覆盖应用所有者私聊。
 
-本机实测新会话从飞书发出到 Codex 开始生成约 **15 秒**，并非瞬间。控制会话与项目归属步骤是主要新增延时。生成中的后续追问已在 Codex 状态中观察到 `inProgress`；不同桌面版本的可见动画仍应由使用者验收。
+新会话需要创建并由 Desktop 加载，飞书发出到 Codex 开始生成并非瞬间。生成中的后续追问已在 Codex 状态中观察到 `inProgress`；不同桌面版本的可见动画仍应由使用者验收。
 
 ## 故障定位
 
 | 现象 | 先检查 |
 | --- | --- |
 | 飞书发出后无反应 | `lark-cli --profile <profile> event status --json`、`logs/bridge.stderr.log`、长连接、事件订阅、应用发布与可用人员 |
-| 收到事件但没有桌面会话 | Codex Desktop 是否启动、`~/.codex/ipc/ipc.sock` 是否存在、控制会话 ID 是否正确 |
-| 会话在“最近”，不在项目 | 控制会话是否能调用 `list_projects` / `move_thread_to_project`，项目是否是本地项目，是否实际读回正确 projectId |
+| 收到事件但没有桌面会话 | Codex Desktop 是否启动、`~/.codex/ipc/ipc.sock` 是否存在、`python3 scripts/setup.py --check` 是否通过 |
+| 会话在“最近”，不在项目 | 项目是否已在 Desktop 添加、`project/list` 是否找到相同绝对路径、`thread/start` 返回的 projectId 是否正确 |
 | Codex 提示“已在另一个应用中打开” | 是否有其他 CLI/app-server 进程在写同一会话；本程序只让外部 app-server 建空会话和只读结果 |
 | Codex 有答复但飞书没收到 | `logs/bridge.stderr.log`、bot 发消息权限、`.state/pending_audits.json`；服务重启后会尝试重发 |
-| Codex 已答复但飞书等待 | 打开 `福头 ✨｜答复审核`，检查待处理的“允许发送/拒绝发送”弹框；没有人工选择就不会发送实质答复 |
+| Codex 已答复但飞书等待 | 打开该条飞书问答对应的 Codex 会话，检查待处理的“允许发送/拒绝发送”弹框；来源于私有资料的答复需要人工选择 |
 
 请勿把 `config.json`、`.state/` 或 `logs/` 提交到公开仓库。`project/AGENTS.md` 是模型行为约束，**不是严格的权限边界**；飞书应用可用人员应由管理员控制，项目目录不要放凭证。
 

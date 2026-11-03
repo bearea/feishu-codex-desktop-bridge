@@ -47,10 +47,17 @@ def prepare(path: Path) -> None:
     if not target.exists():
         shutil.copy2(ROOT / "project" / "AGENTS.md", target)
     print(f"Codex 项目目录：{project}")
-    print("请在 Codex Desktop 添加此本地项目，然后新建一个独立的控制会话，使用下面的提示词：")
-    print((ROOT / "project" / "ROUTER_PROMPT.txt").read_text(encoding="utf-8")
-          .replace("__PROJECT_DIR__", str(project)))
-    print("最后将控制会话 ID 填入 config.json 的 router_thread_id。")
+    print("请在 Codex Desktop 将此目录添加为本地项目，再填写 config.json。")
+
+
+def check_registered_project(project: Path, config: Path) -> None:
+    sys.path.insert(0, str(ROOT))
+    os.environ["FEISHU_CODEX_CONFIG"] = str(config)
+    import bridge
+    if bridge.SESSION_CWD != project:
+        raise RuntimeError("Codex 项目目录与配置不一致")
+    with bridge.app_server() as process:
+        bridge.find_project_id(process)
 
 
 def check(path: Path) -> tuple[dict, Path, dict[str, str]]:
@@ -58,9 +65,6 @@ def check(path: Path) -> tuple[dict, Path, dict[str, str]]:
     project = project_path(data)
     if not project.is_dir() or not (project / "AGENTS.md").is_file():
         raise RuntimeError(f"项目目录或 AGENTS.md 不存在：{project}；先运行 --prepare")
-    router = str(data.get("router_thread_id") or "")
-    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f-]{27,}", router):
-        raise RuntimeError("router_thread_id 未填写有效的 Codex 会话 ID")
     profile = str(data.get("lark_profile") or "")
     if not profile:
         raise RuntimeError("lark_profile 不能为空")
@@ -72,6 +76,7 @@ def check(path: Path) -> tuple[dict, Path, dict[str, str]]:
         raise RuntimeError(f"找不到命令：{[name for name, value in paths.items() if not value]}")
     if not (Path.home() / ".codex" / "ipc" / "ipc.sock").is_socket():
         raise RuntimeError("Codex Desktop IPC socket 不存在；请先打开并登录桌面版")
+    check_registered_project(project, path)
     permission_profile = str(data.get("permission_profile") or "")
     product_read_path = str(data.get("product_read_path") or "")
     if product_read_path and not permission_profile:
@@ -92,7 +97,7 @@ def check(path: Path) -> tuple[dict, Path, dict[str, str]]:
     if bot.get("status") != "ready" or bot.get("verified") is not True:
         raise RuntimeError("飞书 bot 身份尚未 ready/verified")
     print(f"检查通过：项目={project}；飞书 App ID={identity.get('appId') or '未知'}；Codex Desktop IPC 可用")
-    print("控制会话的工具权限、飞书事件订阅和应用发布状态仍需按 README 做真实消息验收。")
+    print("飞书事件订阅和应用发布状态仍需按 README 做真实消息验收。")
     return data, project, paths
 
 

@@ -1,7 +1,6 @@
 {
   "project_dir": "./feishu-message",
   "lark_profile": "futou_bot",
-  "router_thread_id": "",
   "bot_display_name": "福头 ✨",
   "model": "gpt-6.1-sol",
   "permission_profile": "",

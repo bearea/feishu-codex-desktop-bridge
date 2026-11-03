@@ -17,8 +17,8 @@ SECRET_PATTERNS = (
 )
 
 
-def export_decision(answer: str) -> str:
-    """Return block, review, or auto. Unknown substantive text requires review."""
+def export_decision(answer: str, *, private_context: bool = True) -> str:
+    """Return block, review, or auto. Private source use requires review."""
     if not answer or len(answer) > 9000:
         return "block"
     if any(pattern.search(answer) for pattern in SECRET_PATTERNS):
@@ -27,7 +27,7 @@ def export_decision(answer: str) -> str:
         return "block"
     if answer.strip() == OUT_OF_SCOPE:
         return "auto"
-    return "review"
+    return "review" if private_context else "auto"
 
 
 def has_long_verbatim_overlap(answer: str, tool_items: list[dict], window: int = 80) -> bool:
