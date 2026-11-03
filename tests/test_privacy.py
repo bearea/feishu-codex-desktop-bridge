@@ -12,7 +12,7 @@ MESSAGE_ID = "om_1234567890abcdef"
 
 def pending_record():
     return {"answer": "先检查展示规则。", "codex_thread_id": "original-chat",
-            "review_turn_id": "request", "question": "内部接口状态为何不同？",
+            "review_turn_id": "request", "question": "内部接口地址是什么？",
             "unsupported_tool": False, "source_excerpt_detected": False}
 
 
@@ -24,6 +24,8 @@ class ExportPolicyTests(unittest.TestCase):
         self.assertEqual(export_decision("README 概括了产品模块。", question="概括项目 README 的用途"), "auto")
         self.assertEqual(export_decision("先确认页面版本与操作步骤。",
                                          question="线上页面显示不一致，怎么排查？"), "auto")
+        self.assertEqual(export_decision("尚未连接实际数据库核验字段完整度和历史数据。",
+                                         question="AI 尽调员的 Grafana 看板可以统计哪些指标？"), "auto")
         self.assertEqual(export_decision("请提供 README 内容，我会省略内部地址。",
                                          question="概括项目 README；不要给出具体实现、内部地址"), "auto")
         self.assertEqual(export_decision("按创建任务、访谈、生成报告三步核对。",

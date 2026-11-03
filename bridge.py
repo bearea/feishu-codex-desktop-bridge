@@ -710,7 +710,11 @@ def main() -> None:
                     if listener.poll() is not None:
                         break
                     if outbox:
-                        flush_outbox(outbox, done, threads)
+                        try:
+                            flush_outbox(outbox, done, threads)
+                        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
+                            log(f"answer delivery pending: {exc}")
+                            time.sleep(15)
                     continue
                 line = listener.stdout.readline()
                 if not line:
