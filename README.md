@@ -1,6 +1,6 @@
 # Feishu → Codex Desktop Bridge / 飞书机器人接入 Codex 桌面会话
 
-把飞书机器人收到的文字问题送进**本机 Codex Desktop 的原生会话**，在桌面项目中保留提问与答复，再由机器人回复飞书。私聊追问续接同一会话；`新会话：问题`、`重新开始：问题` 等明确表达会新开会话。机主也可以在对应 Codex 会话中明确要求把一条回复发给飞书提问人。
+把飞书机器人收到的提问送进**本机 Codex Desktop 的原生会话**，在桌面项目中保留提问与答复，再由机器人回复飞书。私聊追问续接同一会话；`新会话：问题`、`重新开始：问题` 等明确表达会新开会话。文档评论中明确 @ 机器人时，可选的评论通道会把评论和机器人有权读取的 Docx 正文送入独立 Codex 会话。机主也可以在对应聊天会话中明确要求把一条回复发给飞书提问人。
 
 > **当前状态：实验性 macOS 方案。** 已在一台 Mac 上用真实飞书私聊验证“新会话 → Codex 项目 → 桌面版生成 → 飞书回复”和同一会话追问。Codex Desktop 的本地 IPC 不是公开稳定接口；自动归入左侧项目依赖当前 Codex app-server 的 `project/list`、`thread/start.projectId` 和 `thread/metadata/update`。仅克隆代码、填写飞书密钥，**不足以保证**在任何 Codex 安装上获得相同的项目显示效果。安装检查会验证已知本机前提，最后必须做真实消息验收。
 
@@ -32,7 +32,9 @@ codex plugin add feishu-codex-desktop-bridge@feishu-codex-bridge
 ## 链路
 
 ```text
-飞书用户 → im.message.receive_v1 → lark-cli event consume → bridge.py
+飞书私聊/群聊 → im.message.receive_v1 ─┐
+云文档评论 @机器人 → drive.notice.comment_add_v1 ├→ lark-cli event consume → bridge.py
+                                     ┘
   → 按飞书 chat_id / 群话题 / 发送者查找 Codex 会话
   → 新会话：Codex app-server 直接在本地项目中创建空会话并退出，Desktop 加载并取得写入权
   → desktop_ipc.py 向 Desktop 提交原始提问（真正的 userMessage）
@@ -44,6 +46,8 @@ codex plugin add feishu-codex-desktop-bridge@feishu-codex-bridge
 机主在对应 Codex 会话明确要求回复飞书
   → 本机语义识别 → 出站检查/必要时审核 → lark-cli 以 bot 身份发送到原飞书聊天
 ```
+
+评论通道只处理 `is_mentioned=true` 且由用户发出的新评论或回复。普通编辑、协作者变化、机器人自身评论不会生成问答。局部评论直接在原评论下回复；飞书不允许给全文评论添加回复，桥接会另建一条标明原评论 ID、并 @ 提问人的全文评论；已解决评论等不能原地回复的情况改为私聊提问人。文档评论按“文档 + 评论 ID”建立独立 Codex 会话，同一评论下的后续 @ 续接此会话。
 
 `bridge.py` 把飞书消息 ID、提问人、时间和问题原文写入 Codex 输入。桌面版自己生成答复；外部 `app-server` **不执行答复轮次**，避免它和桌面版争夺会话写入权。会话/消息映射与待发答复保存在本机 `.state/`（已被 Git 忽略），机器人回信带幂等键。没有额外的问答抄送。机主手动要求发给飞书时，`manual_reply.py` 使用一次不留侧边栏会话的 Codex 语义判断；明确发送意图和正文才会进入待发队列。普通讨论、草稿和含糊的表达不会外发。
 
@@ -61,6 +65,26 @@ codex plugin add feishu-codex-desktop-bridge@feishu-codex-bridge
 3. 开启与当前实现相符的应用身份权限：私聊接收 `im:message.p2p_msg:readonly`、机器人发送 `im:message:send_as_bot`。如需群里 @ 机器人，再开启 `im:message.group_at_msg.include_bot:readonly`；如需标题显示提问人姓名，开启 `contact:user.base:readonly` 和按飞书后台要求的通讯录基础信息权限 `contact:contact.base:readonly`，并设置可访问的数据范围。
 4. 按飞书的版本审核/发布流程让权限与可用人员生效。**后台勾选权限不等于已对所有员工生效。** 群聊及其他员工的端到端效果尚未在当前实例验证。
 5. 安装飞书 CLI 并为应用创建独立 profile。App Secret 由 CLI 安全配置保存，**不要**写进本仓库的 `config.json`、启动脚本或命令行参数。
+
+### 文档评论 @ 机器人（可选）
+
+这部分**尚未在当前飞书应用做端到端验收**。应用目前仅有消息事件和权限；版本审核中的配置也会锁住后台新增权限与事件。要启用时，在开发者后台额外开通应用身份的 `docs:document.comment:read`、`docs:document.comment:create`、`docx:document:readonly`，订阅 `drive.notice.comment_add_v1`，按后台流程发布并让机器人取得测试文档的访问权。读取整篇文档是为了回答“总结一下”等问题；若仅需处理评论文字，可在代码里关闭 Docx 正文读取并去掉对应权限。CLI 或 API 报错时以实际 `missing_scopes` 和文档授权状态为准。权限范围由飞书应用与文档共同控制，桥接不会借用机主的用户身份读取机器人无权访问的文档。
+
+当前稳定 `lark-cli` 1.0.96 还不认识此事件。本仓库提供临时构建脚本，从[飞书 CLI 的评论事件 PR](https://github.com/larksuite/cli/pull/2846)固定提交构建到仓库内 `.tools/`，不会覆盖系统 CLI。需安装 Go 与 Git；该 PR 更新后脚本会要求先审查新提交。上游正式发布支持该事件的 CLI 后，可直接改用正式版本。
+
+```bash
+bash scripts/build_comment_cli.sh
+```
+
+在私有 `config.json` 里设置 `"comment_events_enabled": true`，并将 `"event_cli"` 设为构建输出的**绝对路径**。然后执行 `python3 scripts/setup.py --check` 并重启桥接。评论事件消费会向飞书登记订阅；测试时在有权访问的 Docx 文档评论中明确 `@福头 ✨ 总结一下`，确认 `feishu-message` 项目先出现新会话，再检查文档里出现回复。旧评论事件不会因之后开通权限而自动补发，请重新 @ 一次。若评论读取权限暂不可用，该评论会保留在待处理队列并定时重试，私聊问答继续运行。
+
+| 飞书动作 | 当前处理 |
+| --- | --- |
+| 私聊发文字、群里 @ 机器人 | 进入 Codex 原生会话并回到原聊天；群聊仍需对应权限和实测 |
+| 私聊/群聊发图片、文件、音视频 | 建立 Codex 会话并说明附件正文尚不可读，请补文字；不猜测附件 |
+| 云文档评论明确 @ 机器人 | 可选评论通道；Docx 可读正文，其它文档类型先只读取评论文字 |
+| 点击自定义机器人菜单、操作交互卡片 | 目前机器人未配置菜单或发出卡片；若以后增加，需要按动作语义接入 `application.bot.menu_v6` 或 `card.action.trigger` |
+| 文档修改、协作者增删、已读、群成员变化 | 不当作提问，不进入 Codex |
 
 ```bash
 npm install -g @larksuite/cli

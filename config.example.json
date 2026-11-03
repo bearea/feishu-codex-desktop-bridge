@@ -8,6 +8,8 @@
   "product_read_path": "",
   "codex_history_read": false,
   "codex_bundle_id": "com.openai.codex",
+  "comment_events_enabled": false,
+  "event_cli": "lark-cli",
   "owner_open_id": "",
   "owner_display_name": "",
   "launchd_label": "cn.local.feishu-codex-bridge"

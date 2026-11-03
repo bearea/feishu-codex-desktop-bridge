@@ -96,6 +96,15 @@ def check(path: Path) -> tuple[dict, Path, dict[str, str]]:
     bot = identity.get("identities", {}).get("bot", {})
     if bot.get("status") != "ready" or bot.get("verified") is not True:
         raise RuntimeError("飞书 bot 身份尚未 ready/verified")
+    if str(data.get("comment_events_enabled") or "").lower() == "true":
+        event_cli = str(data.get("event_cli") or paths["lark-cli"])
+        executable = shutil.which(event_cli)
+        if not executable:
+            raise RuntimeError(f"找不到文档评论事件 CLI：{event_cli}")
+        schema = subprocess.run([executable, "event", "schema", "drive.notice.comment_add_v1", "--json"],
+                                capture_output=True, text=True, timeout=15, check=False)
+        if schema.returncode:
+            raise RuntimeError("事件 CLI 不支持文档评论通知；请使用包含 drive.notice.comment_add_v1 的版本")
     print(f"检查通过：项目={project}；飞书 App ID={identity.get('appId') or '未知'}；Codex Desktop IPC 可用")
     print("飞书事件订阅和应用发布状态仍需按 README 做真实消息验收。")
     return data, project, paths
