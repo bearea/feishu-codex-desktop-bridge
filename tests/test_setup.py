@@ -1,8 +1,11 @@
 """Verify generated launchd settings without installing or starting a service."""
 
 import plistlib
+import json
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts import setup
 
@@ -24,6 +27,42 @@ class SetupTests(unittest.TestCase):
         self.assertIn("/Users/example/.nvm/bin", plist["EnvironmentVariables"]["PATH"])
         self.assertIn("bridge.py", plist["ProgramArguments"][1])
         plistlib.loads(plistlib.dumps(plist))
+
+    def test_uninstall_stops_only_own_service(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "config.json"
+            config.write_text(json.dumps({"launchd_label": "cn.example.bridge"}))
+            agent = Path(temp) / "bridge.plist"
+            agent.write_bytes(plistlib.dumps({
+                "Label": "cn.example.bridge",
+                "ProgramArguments": ["/usr/bin/python3", str(setup.ROOT / "bridge.py")],
+                "WorkingDirectory": str(setup.ROOT),
+            }))
+            with patch.object(setup, "plist_path", return_value=agent), \
+                    patch.object(setup.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                setup.uninstall(config)
+            self.assertFalse(agent.exists())
+            self.assertTrue(config.exists())
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args.args[0][:2], ["launchctl", "bootout"])
+
+    def test_uninstall_refuses_foreign_service(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "config.json"
+            config.write_text(json.dumps({"launchd_label": "cn.example.bridge"}))
+            agent = Path(temp) / "bridge.plist"
+            agent.write_bytes(plistlib.dumps({
+                "Label": "cn.example.bridge",
+                "ProgramArguments": ["/usr/bin/python3", "/other/bridge.py"],
+                "WorkingDirectory": "/other",
+            }))
+            with patch.object(setup, "plist_path", return_value=agent), \
+                    patch.object(setup.subprocess, "run") as run:
+                with self.assertRaises(RuntimeError):
+                    setup.uninstall(config)
+            self.assertTrue(agent.exists())
+            run.assert_not_called()
 
 
 if __name__ == "__main__":

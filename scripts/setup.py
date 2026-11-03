@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare, validate, and install the macOS LaunchAgent for this bridge."""
+"""Prepare, validate, install, and uninstall the macOS LaunchAgent."""
 
 from __future__ import annotations
 
@@ -105,6 +105,18 @@ def plist_path(label: str) -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
 
+def verify_owned_plist(path: Path, label: str) -> None:
+    """Refuse to modify a LaunchAgent that does not belong to this checkout."""
+    with path.open("rb") as stream:
+        plist = plistlib.load(stream)
+    args = plist.get("ProgramArguments") or []
+    expected_program = (ROOT / "bridge.py").resolve()
+    if (plist.get("Label") != label or len(args) < 2 or
+            Path(args[1]).resolve() != expected_program or
+            Path(plist.get("WorkingDirectory") or "/").resolve() != ROOT.resolve()):
+        raise RuntimeError(f"LaunchAgent 不属于当前桥接目录，已停止操作：{path}")
+
+
 def build_plist(data: dict, paths: dict[str, str], config: Path, logs: Path) -> dict:
     python_path = shutil.which("python3") or sys.executable
     binary_dirs = [str(Path(python_path).parent)]
@@ -130,6 +142,7 @@ def install(path: Path) -> None:
     path_to_plist.parent.mkdir(parents=True, exist_ok=True)
     plist = build_plist(data, paths, path, logs)
     if path_to_plist.exists():
+        verify_owned_plist(path_to_plist, label)
         subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(path_to_plist)],
                        capture_output=True, text=True, check=False)
     with path_to_plist.open("wb") as stream:
@@ -141,12 +154,33 @@ def install(path: Path) -> None:
     print(f"运行日志：{logs / 'bridge.stderr.log'}")
 
 
+def uninstall(path: Path) -> None:
+    data = load_config(path)
+    label = str(data.get("launchd_label") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", label):
+        raise RuntimeError("launchd_label 无效，无法确定要卸载的服务")
+    path_to_plist = plist_path(label)
+    if not path_to_plist.exists():
+        print(f"服务未安装：{label}")
+        return
+    verify_owned_plist(path_to_plist, label)
+    domain_label = f"gui/{os.getuid()}/{label}"
+    active = subprocess.run(["launchctl", "print", domain_label],
+                            capture_output=True, text=True, check=False)
+    if active.returncode == 0:
+        subprocess.run(["launchctl", "bootout", domain_label], check=True)
+    path_to_plist.unlink()
+    print(f"已停止并卸载桥接服务：{label}")
+    print("本地配置、问答记录和日志已保留。")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--prepare", action="store_true", help="生成配置和 Codex 项目目录")
     group.add_argument("--check", action="store_true", help="检查本机配置但不安装服务")
     group.add_argument("--install", action="store_true", help="安装并启动 LaunchAgent")
+    group.add_argument("--uninstall", action="store_true", help="停止并卸载 LaunchAgent，保留本地数据")
     parser.add_argument("--config", help="配置文件路径，默认仓库根目录 config.json")
     args = parser.parse_args()
     path = config_path(args.config)
@@ -155,6 +189,8 @@ def main() -> None:
             prepare(path)
         elif args.check:
             check(path)
+        elif args.uninstall:
+            uninstall(path)
         else:
             install(path)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:

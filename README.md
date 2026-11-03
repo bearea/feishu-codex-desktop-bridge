@@ -91,6 +91,18 @@ python3 scripts/setup.py --install
 
 `--check` 验证 CLI、飞书 bot profile、本地项目登记与 Desktop IPC socket；它无法代替真实消息验收。`--install` 会生成 `~/Library/LaunchAgents/<launchd_label>.plist`，后台启动桥接，并将日志写到仓库 `logs/`。同一飞书应用只运行**一个**桥接进程。修改代码后可执行 `launchctl kickstart -k "gui/$(id -u)/<launchd_label>"` 重启。
 
+## 重启与卸载
+
+安装插件本身不会启动桥接；完成向导的 `--install` 后，macOS LaunchAgent 才会负责常驻运行。它设置了 `RunAtLoad` 和 `KeepAlive`：Mac 重启后，**用户登录图形会话时**自动启动，进程退出时由系统尝试拉起。关机期间或重启后尚未登录时不会处理飞书消息；登录后仍需网络、有效的飞书应用配置和可用的 Codex Desktop。请用真实飞书消息核对恢复，不把进程存在当成问答验收。
+
+只在 Codex 里点击“卸载插件”或执行 `codex plugin remove`，**不会**自动停止独立安装的 LaunchAgent。请在向导使用的稳定桥接目录运行下面的统一卸载入口，它先停止并删除本项目所属的 LaunchAgent，再卸载插件：
+
+```bash
+./uninstall.command
+```
+
+也可以只停止桥接服务：`python3 scripts/setup.py --uninstall`。卸载会保留本机 `config.json`、`.state/`、`logs/`、Codex 项目和已有会话，便于恢复或单独清理；它不会删除飞书开发者后台的应用。若安装时使用了其他配置文件，运行前设置 `FEISHU_CODEX_CONFIG` 指向该文件。卸载脚本会核对 LaunchAgent 确实指向当前仓库，避免误删同名的其他服务。卸载完成后再手动删除稳定桥接目录，前提是已经备份或不再需要其中的数据。
+
 ## 试点读取本地产品资料
 
 默认 `config.json` 中 `product_read_path` 与 `permission_profile` 为空，没有配置项目专用的读取范围。若要试点读取一个已有项目（目录需含 `README.md` 与 `src/`），先只验证权限配置，再安装。脚本只添加一个**显式选择**的命名权限配置，不改变普通 Codex 会话的默认模型、权限或批准策略；会先验证 Codex 配置与实际文件访问，并备份原配置，失败时恢复。

@@ -1,6 +1,6 @@
 ---
 name: feishu-codex-setup
-description: Install and verify a Feishu bot that routes questions to native Codex Desktop chats on the user's Mac. Use when the user asks to set up, reconnect, or diagnose this bridge.
+description: Install, verify, diagnose, or uninstall a Feishu bot that routes questions to native Codex Desktop chats on the user's Mac.
 ---
 
 # 飞书机器人接入 Codex 桌面版
@@ -30,3 +30,7 @@ description: Install and verify a Feishu bot that routes questions to native Cod
 ## 可靠性边界
 
 飞书后台 UI 和 Codex Desktop 本地 IPC 可能变化；遇到不匹配时停止对应自动操作，读取当前页面或错误并定位。保留已完成的安装状态，避免重复创建应用、重复提交版本或启动两个监听同一应用的服务。macOS 用户会话、网络与本机桥接需要持续运行，Skill 本身不是常驻服务。
+
+## 卸载
+
+若用户要求卸载整个方案，在稳定桥接目录运行 `./uninstall.command`，先停止并移除 LaunchAgent，再卸载 Codex 插件。只移除插件不会自动移除独立服务。卸载前检查当前配置路径和 LaunchAgent 归属；失败时说明残留状态，不要声称已完全卸载。默认保留本机配置、消息状态、日志、Codex 会话与飞书应用；只有用户明确要求清理这些数据时才另行处理。
