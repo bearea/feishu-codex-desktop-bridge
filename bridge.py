@@ -368,8 +368,12 @@ def ask_codex(message_id: str, record: dict, threads: dict[str, str], outbox: di
     return answer
 
 
+def idempotency_key(message_id: str, purpose: str) -> str:
+    return "fcx-" + purpose + "-" + hashlib.sha256(message_id.encode()).hexdigest()[:32]
+
+
 def send_text(message_id: str, purpose: str, target_type: str, target: str, text: str) -> None:
-    key = "feishu-codex-" + purpose + "-" + hashlib.sha256(message_id.encode()).hexdigest()[:32]
+    key = idempotency_key(message_id, purpose)
     result = subprocess.run(
         [
             "lark-cli", "--profile", PROFILE, "im", "+messages-send",
@@ -382,7 +386,8 @@ def send_text(message_id: str, purpose: str, target_type: str, target: str, text
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Feishu send failed with status {result.returncode}: {result.stdout[-500:]}")
+        detail = result.stderr[-500:] or result.stdout[-500:]
+        raise RuntimeError(f"Feishu send failed with status {result.returncode}: {detail}")
     payload = json.loads(result.stdout)
     if payload.get("ok") is not True:
         raise RuntimeError(f"Feishu send rejected: {payload.get('error', {}).get('type', 'unknown')}")

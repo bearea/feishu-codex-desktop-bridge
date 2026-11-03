@@ -36,6 +36,11 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("审批状态为何不同", title)
         self.assertNotIn("新会话：", title)
 
+    def test_reply_idempotency_key_fits_cli_limit(self):
+        key = bridge.idempotency_key("om_example", "reply")
+        self.assertLessEqual(len(key), 50)
+        self.assertEqual(key, bridge.idempotency_key("om_example", "reply"))
+
 
 if __name__ == "__main__":
     unittest.main()
