@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -71,6 +72,16 @@ def check(path: Path) -> tuple[dict, Path, dict[str, str]]:
         raise RuntimeError(f"找不到命令：{[name for name, value in paths.items() if not value]}")
     if not (Path.home() / ".codex" / "ipc" / "ipc.sock").is_socket():
         raise RuntimeError("Codex Desktop IPC socket 不存在；请先打开并登录桌面版")
+    permission_profile = str(data.get("permission_profile") or "")
+    product_read_path = str(data.get("product_read_path") or "")
+    if product_read_path and not permission_profile:
+        raise RuntimeError("启用产品目录读取时必须配置 permission_profile")
+    if permission_profile:
+        codex_config = tomllib.loads((Path.home() / ".codex" / "config.toml").read_text())
+        if permission_profile not in codex_config.get("permissions", {}):
+            raise RuntimeError(f"Codex 权限配置不存在：{permission_profile}")
+        if not product_read_path or not Path(product_read_path).is_dir():
+            raise RuntimeError("product_read_path 必须是已存在的绝对目录")
     status = subprocess.run([paths["lark-cli"], "--profile", profile,
                              "auth", "status", "--json", "--verify"],
                             capture_output=True, text=True, timeout=20, check=False)

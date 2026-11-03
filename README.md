@@ -19,7 +19,8 @@
   → 控制会话把新会话移入本地项目
   → desktop_ipc.py 向 Desktop 提交原始提问（真正的 userMessage）
   → Codex Desktop 生成答复，bridge.py 只读等待完成
-  → lark-cli 以 bot 身份回复原飞书聊天
+  → 本机出站检查：凭证/原始代码直接拦截，其他实质答复进入 Codex 审核会话
+  → 机主在 Codex 弹框选择允许后，lark-cli 才以 bot 身份回复原飞书聊天
 ```
 
 `bridge.py` 把飞书消息 ID、提问人、时间和问题原文写入 Codex 输入。桌面版自己生成答复；外部 `app-server` **不执行答复轮次**，避免它和桌面版争夺会话写入权。会话/消息映射与待发答复保存在本机 `.state/`（已被 Git 忽略），机器人回信带幂等键。没有额外的问答抄送。
@@ -69,6 +70,19 @@ python3 scripts/setup.py --install
 
 `--check` 验证 CLI、飞书 bot profile、项目目录与 Desktop IPC socket；它无法代替第 2 步的工具权限确认或真实消息验收。`--install` 会生成 `~/Library/LaunchAgents/<launchd_label>.plist`，后台启动桥接，并将日志写到仓库 `logs/`。同一飞书应用只运行**一个**桥接进程。修改代码后可执行 `launchctl kickstart -k "gui/$(id -u)/<launchd_label>"` 重启。
 
+## 试点读取本地产品资料
+
+默认 `config.json` 中 `product_read_path` 与 `permission_profile` 为空，没有配置项目专用的读取范围。若要试点读取一个已有项目（目录需含 `README.md` 与 `src/`），先只验证权限配置，再安装。脚本只添加一个**显式选择**的命名权限配置，不改变普通 Codex 会话的默认模型、权限或批准策略；会先验证 Codex 配置与实际文件访问，并备份原配置，失败时恢复。
+
+```bash
+python3 scripts/install_read_profile.py --project /绝对路径/产品项目 --bot-project /绝对路径/feishu-message
+python3 scripts/install_read_profile.py --project /绝对路径/产品项目 --bot-project /绝对路径/feishu-message --install
+```
+
+然后在私有 `config.json` 填入 `"permission_profile": "futou_nova_read"`、`"product_read_path": "/绝对路径/产品项目"`。如需让机器人检索其他 Codex 会话的**只读内容**，再设置 `"codex_history_read": true`。调整 `feishu-message/AGENTS.md`，明确只读资料和会话的用途，不允许把原始文件或会话内容直接放进答复。桥接会在每轮提问中显式提交命名权限，并在答复前核对 Desktop 实际执行记录；若 Desktop 未使用受限权限，就停止发送。设置后在飞书用 `新会话：...` 验证。其他会话工具、浏览器和 MCP 不受命令沙箱直接限制，因此还需要本机答复审核。
+
+试点期间，除固定的无关问题提示外，所有实质答复都必须在 `福头 ✨｜答复审核` 会话中由机主选择“允许发送”或“拒绝发送”；未选择时不回飞书。带凭证、密钥、连接串、整段代码或与工具读取结果较长逐字重合的答复会直接拦截，批准也不能放行。审核会话仅在发起新审核时打开，等待选择时不抢桌面焦点。这是保守的出站关口；自动识别不能证明所有敏感信息已被发现，机主仍需检查拟发送内容。Codex 读取本地文件时，相关片段可能进入模型上下文；“不发回飞书”不等于模型完全离线运行。
+
 ## 使用与验收
 
 1. 飞书发 `新会话：某审批单列表和详情状态不一致，应该先核对什么？`。
@@ -87,6 +101,7 @@ python3 scripts/setup.py --install
 | 会话在“最近”，不在项目 | 控制会话是否能调用 `list_projects` / `move_thread_to_project`，项目是否是本地项目，是否实际读回正确 projectId |
 | Codex 提示“已在另一个应用中打开” | 是否有其他 CLI/app-server 进程在写同一会话；本程序只让外部 app-server 建空会话和只读结果 |
 | Codex 有答复但飞书没收到 | `logs/bridge.stderr.log`、bot 发消息权限、`.state/pending_audits.json`；服务重启后会尝试重发 |
+| Codex 已答复但飞书等待 | 打开 `福头 ✨｜答复审核`，检查待处理的“允许发送/拒绝发送”弹框；没有人工选择就不会发送实质答复 |
 
 请勿把 `config.json`、`.state/` 或 `logs/` 提交到公开仓库。`project/AGENTS.md` 是模型行为约束，**不是严格的权限边界**；飞书应用可用人员应由管理员控制，项目目录不要放凭证。
 

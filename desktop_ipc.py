@@ -107,13 +107,26 @@ class DesktopIpc:
         return owner_id
 
     def start_turn(self, thread_id: str, text: str, client_message_id: str,
-                   cwd: str | None = None) -> str:
+                   cwd: str | None = None, *, permissions: str | None = None,
+                   approval_policy: str | None = None,
+                   sandbox_policy: dict | None = None,
+                   model: str | None = None) -> str:
         owner_id = self.owner(thread_id)
         request = {"threadId": thread_id,
                    "input": [{"type": "text", "text": text, "text_elements": []}],
                    "clientUserMessageId": client_message_id}
         if cwd:
             request["cwd"] = cwd
+        if permissions and sandbox_policy:
+            raise DesktopIpcError("permissions and sandbox_policy cannot be combined")
+        if permissions:
+            request["permissions"] = permissions
+        if sandbox_policy:
+            request["sandboxPolicy"] = sandbox_policy
+        if approval_policy:
+            request["approvalPolicy"] = approval_policy
+        if model:
+            request["model"] = model
         result, _ = self._request("thread-follower-start-turn", {
             "conversationId": thread_id,
             "turnStart": {
