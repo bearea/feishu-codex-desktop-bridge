@@ -27,6 +27,7 @@ def fragment(project: Path, bot_project: Path, name: str) -> str:
 [{f}.filesystem]
 ":minimal" = "read"
 {quoted(bot_project)} = "read"
+{quoted(project)} = "deny"
 {quoted(project / 'README.md')} = "read"
 {quoted(project / 'docs')} = "read"
 {quoted(project / 'src')} = "read"
@@ -42,7 +43,7 @@ enabled = false
 '''
 
 
-def validate(text: str, project: Path, name: str) -> None:
+def validate(text: str, project: Path, bot_project: Path, name: str) -> None:
     tomllib.loads(text)
     with tempfile.TemporaryDirectory(prefix="futou-codex-config-") as directory:
         temp_home = Path(directory)
@@ -52,13 +53,16 @@ def validate(text: str, project: Path, name: str) -> None:
             env=environment, text=True, capture_output=True, timeout=20)
         if check.returncode:
             raise RuntimeError(f"Codex rejected config: {check.stderr[-500:]}")
-        for path, expected in ((project / "README.md", True), (project / ".env", False)):
+        for path, expected in ((project / "README.md", True),
+                               (project / "pyproject.toml", False),
+                               (project / ".env", False),
+                               (bot_project / "AGENTS.md", True)):
             if not path.exists():
                 continue
             trial = subprocess.run(["codex", "sandbox", "-P", name, "--", "sh", "-c",
                 'head -c 1 "$1" >/dev/null 2>&1', "x", str(path)],
-                env=environment, text=True, capture_output=True, timeout=20)
-            if (trial.returncode == 0) != expected:
+                cwd=bot_project, env=environment, text=True, capture_output=True, timeout=20)
+            if (trial.returncode == 0) != expected or "getcwd: cannot access" in trial.stderr:
                 raise RuntimeError(f"Permission trial failed for {path.name}")
 
 
@@ -80,7 +84,7 @@ def main() -> None:
     if args.name in parsed.get("permissions", {}):
         raise SystemExit(f"profile already exists: {args.name}")
     merged = original.rstrip() + "\n" + fragment(project, bot_project, args.name)
-    validate(merged, project, args.name)
+    validate(merged, project, bot_project, args.name)
     if not args.install:
         print("独立配置验证通过；未改动 ~/.codex/config.toml")
         return
@@ -90,7 +94,7 @@ def main() -> None:
     try:
         temporary.write_text(merged, encoding="utf-8")
         os.replace(temporary, config)
-        validate(config.read_text(encoding="utf-8"), project, args.name)
+        validate(config.read_text(encoding="utf-8"), project, bot_project, args.name)
     except Exception:
         shutil.copy2(backup, config)
         raise

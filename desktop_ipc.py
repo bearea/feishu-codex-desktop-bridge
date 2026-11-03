@@ -110,7 +110,8 @@ class DesktopIpc:
                    cwd: str | None = None, *, permissions: str | None = None,
                    approval_policy: str | None = None,
                    sandbox_policy: dict | None = None,
-                   model: str | None = None) -> str:
+                   model: str | None = None,
+                   effort: str | None = None) -> str:
         owner_id = self.owner(thread_id)
         request = {"threadId": thread_id,
                    "input": [{"type": "text", "text": text, "text_elements": []}],
@@ -127,12 +128,14 @@ class DesktopIpc:
             request["approvalPolicy"] = approval_policy
         if model:
             request["model"] = model
+        if effort:
+            request["effort"] = effort
         result, _ = self._request("thread-follower-start-turn", {
             "conversationId": thread_id,
             "turnStart": {
                 "request": request,
                 "context": {"attachments": [], "commentAttachments": [],
-                            "inheritThreadSettings": True, "threadStartKind": "user"},
+                            "inheritThreadSettings": False, "threadStartKind": "user"},
             },
         }, 2, target=owner_id)
         payload = result.get("result") if isinstance(result.get("result"), dict) else result

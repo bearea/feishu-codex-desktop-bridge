@@ -3,6 +3,7 @@
   "lark_profile": "futou_bot",
   "bot_display_name": "福头 ✨",
   "model": "gpt-6.1-sol",
+  "reasoning_effort": "high",
   "permission_profile": "",
   "product_read_path": "",
   "codex_history_read": false,

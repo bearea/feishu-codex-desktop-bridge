@@ -62,7 +62,7 @@ class DesktopIpcTests(unittest.TestCase):
                     with desktop_ipc.DesktopIpc(timeout=2) as client:
                         turn_id = client.start_turn("thread-1", "原始问题", "message-1",
                             permissions="futou_nova_read", approval_policy="on-request",
-                            model="gpt-6.1-sol")
+                            model="gpt-6.1-sol", effort="high")
                 self.assertEqual(turn_id, "turn-1")
                 self.assertEqual([r["method"] for r in received],
                                  ["initialize", "thread-owner-discovery", "thread-follower-start-turn"])
@@ -74,6 +74,8 @@ class DesktopIpcTests(unittest.TestCase):
                 self.assertEqual(request["permissions"], "futou_nova_read")
                 self.assertEqual(request["approvalPolicy"], "on-request")
                 self.assertEqual(request["model"], "gpt-6.1-sol")
+                self.assertEqual(request["effort"], "high")
+                self.assertFalse(submitted["params"]["turnStart"]["context"]["inheritThreadSettings"])
             finally:
                 thread.join(timeout=3)
                 server.close()
