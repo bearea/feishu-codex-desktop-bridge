@@ -93,7 +93,8 @@ class ExportPolicyTests(unittest.TestCase):
                       "帮我部署一下", "请改下 README.md",
                       "帮我在 nova-be 里面改一个字段", "能不能运行测试",
                       "可不可以修改代码", "帮我新增一个功能",
-                      "UPDATE imp_nova.t SET x = 1", "请执行 DELETE FROM imp_nova.t")
+                      "UPDATE imp_nova.t SET x = 1", "请执行 DELETE FROM imp_nova.t",
+                      "通过 FTD 发布服务", "通过 k8s CLI 重启服务")
         for question in operations:
             with self.subTest(question=question):
                 self.assertTrue(is_prohibited_operation_request(question))
@@ -115,7 +116,9 @@ class ExportPolicyTests(unittest.TestCase):
         for question in ("服务为什么运行失败？", "如果改成 PC，需要跑什么测试？",
                          "请分析修改代码的可行性", "帮我说说如何修改配置",
                          "运行测试会有什么风险？", "我想知道如何运行测试",
-                         "帮我查询 Nova SIT 数据，SELECT * FROM imp_nova.t LIMIT 2"):
+                         "帮我查询 Nova SIT 数据，SELECT * FROM imp_nova.t LIMIT 2",
+                         "查询 DEV 环境的服务状态", "查询 LSIT 环境的数据库记录",
+                         "用 FTD 只读查询构建状态", "用 k8s CLI 只读查询 Pod 状态"):
             self.assertFalse(is_prohibited_operation_request(question))
 
     def test_long_source_excerpt_is_blocked(self):
