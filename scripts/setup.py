@@ -152,6 +152,11 @@ def check(path: Path) -> tuple[dict, Path, dict[str, str]]:
     check_registered_project(project, path)
     permission_profile = str(data.get("permission_profile") or "")
     product_read_path = str(data.get("product_read_path") or "")
+    additional_paths = data.get("additional_product_read_paths") or []
+    if not isinstance(additional_paths, list) or any(
+            not isinstance(item, str) or not Path(item).is_absolute() or not (Path(item) / "src").is_dir()
+            for item in additional_paths):
+        raise RuntimeError("additional_product_read_paths 必须是已存在的绝对目录列表")
     if product_read_path and not permission_profile:
         raise RuntimeError("启用产品目录读取时必须配置 permission_profile")
     if permission_profile:

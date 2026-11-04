@@ -18,11 +18,19 @@ def quoted(path: Path) -> str:
     return json.dumps(str(path), ensure_ascii=False)
 
 
-def fragment(project: Path, bot_project: Path, name: str) -> str:
+def fragment(project: Path, bot_project: Path, name: str,
+             additional_projects: tuple[Path, ...] = ()) -> str:
     f = f"permissions.{name}"
+    extra_roots = "".join(f"{quoted(path)} = true\n" for path in additional_projects)
+    extra_files = "".join(
+        f"{quoted(path / part)} = \"read\"\n"
+        for path in additional_projects
+        for part in ("README.md", "package.json", "pnpm-workspace.yaml", "knowledge", "src", "scripts", "tests")
+    )
     return f'''\n# Feishu Codex bridge: selected only by its own threads.
 [{f}.workspace_roots]
 {quoted(project)} = true
+{extra_roots}
 
 [{f}.filesystem]
 ":minimal" = "read"
@@ -31,6 +39,7 @@ def fragment(project: Path, bot_project: Path, name: str) -> str:
 {quoted(project / 'README.md')} = "read"
 {quoted(project / 'docs')} = "read"
 {quoted(project / 'src')} = "read"
+{extra_files}
 
 [{f}.filesystem.":workspace_roots"]
 "**/.env*" = "deny"
@@ -43,7 +52,8 @@ enabled = false
 '''
 
 
-def validate(text: str, project: Path, bot_project: Path, name: str) -> None:
+def validate(text: str, project: Path, bot_project: Path, name: str,
+             additional_projects: tuple[Path, ...] = ()) -> None:
     tomllib.loads(text)
     with tempfile.TemporaryDirectory(prefix="futou-codex-config-") as directory:
         temp_home = Path(directory)
@@ -56,7 +66,8 @@ def validate(text: str, project: Path, bot_project: Path, name: str) -> None:
         for path, expected in ((project / "README.md", True),
                                (project / "pyproject.toml", False),
                                (project / ".env", False),
-                               (bot_project / "AGENTS.md", True)):
+                               (bot_project / "AGENTS.md", True),
+                               *((extra / "README.md", True) for extra in additional_projects)):
             if not path.exists():
                 continue
             trial = subprocess.run(["codex", "sandbox", "-P", name, "--", "sh", "-c",
@@ -71,20 +82,25 @@ def main() -> None:
     parser.add_argument("--project", required=True, type=Path)
     parser.add_argument("--bot-project", required=True, type=Path)
     parser.add_argument("--name", default="futou_nova_read")
+    parser.add_argument("--additional-project", action="append", type=Path, default=[])
     parser.add_argument("--install", action="store_true")
     args = parser.parse_args()
     project, bot_project = args.project.resolve(), args.bot_project.resolve()
+    additional_projects = tuple(path.resolve() for path in args.additional_project)
     if not (project / "README.md").is_file() or not (project / "src").is_dir():
         raise SystemExit("project must have README.md and src/")
     if not (bot_project / "AGENTS.md").is_file():
         raise SystemExit("bot project must have AGENTS.md")
+    if any(not (path / "README.md").is_file() or not (path / "src").is_dir()
+           for path in additional_projects):
+        raise SystemExit("each additional project must have README.md and src/")
     config = Path.home() / ".codex" / "config.toml"
     original = config.read_text(encoding="utf-8")
     parsed = tomllib.loads(original)
     if args.name in parsed.get("permissions", {}):
         raise SystemExit(f"profile already exists: {args.name}")
-    merged = original.rstrip() + "\n" + fragment(project, bot_project, args.name)
-    validate(merged, project, bot_project, args.name)
+    merged = original.rstrip() + "\n" + fragment(project, bot_project, args.name, additional_projects)
+    validate(merged, project, bot_project, args.name, additional_projects)
     if not args.install:
         print("独立配置验证通过；未改动 ~/.codex/config.toml")
         return
@@ -94,7 +110,7 @@ def main() -> None:
     try:
         temporary.write_text(merged, encoding="utf-8")
         os.replace(temporary, config)
-        validate(config.read_text(encoding="utf-8"), project, bot_project, args.name)
+        validate(config.read_text(encoding="utf-8"), project, bot_project, args.name, additional_projects)
     except Exception:
         shutil.copy2(backup, config)
         raise

@@ -6,6 +6,7 @@
   "reasoning_effort": "high",
   "permission_profile": "",
   "product_read_path": "",
+  "additional_product_read_paths": [],
   "codex_history_read": false,
   "codex_bundle_id": "com.openai.codex",
   "comment_events_enabled": false,
