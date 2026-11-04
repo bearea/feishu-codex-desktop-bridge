@@ -25,6 +25,21 @@ class AttachmentTests(unittest.TestCase):
         self.assertIn("第 2 行", rendered)
         self.assertIn("已完成/全部", rendered)
 
+    def test_html_extracts_visible_and_static_labels_without_running_code(self):
+        content = ("<html><title>指标看板</title><style>body{display:none}</style>"
+                   "<h1>业务成效</h1><script>const metrics = ["
+                   "{name:'报告产出客户数', note:'按客户去重'},"
+                   "{name:'报告产出客户数', note:'按客户去重'}];"
+                   "fetch('/private-api');</script></html>")
+        rendered = _file_text("看板.html", content.encode())
+        self.assertIn("业务成效", rendered)
+        self.assertIn("报告产出客户数", rendered)
+        self.assertIn("按客户去重", rendered)
+        self.assertEqual(rendered.count("报告产出客户数"), 1)
+        self.assertNotIn("private-api", rendered)
+        self.assertNotIn("display:none", rendered)
+        self.assertIn("未执行页面脚本", rendered)
+
     def test_download_uses_bot_identity_and_temporary_file(self):
         with tempfile.TemporaryDirectory() as directory:
             def fake_run(argv, **kwargs):

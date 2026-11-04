@@ -83,7 +83,7 @@ bash scripts/build_comment_cli.sh
 | 飞书动作 | 当前处理 |
 | --- | --- |
 | 私聊发文字、群里 @ 机器人 | 进入 Codex 原生会话并回到原聊天；群聊仍需对应权限和实测 |
-| 私聊/群聊发 CSV、TSV、TXT、Markdown、JSON 文件 | 有 `im:message:readonly` 权限时下载到本机临时目录，解析文字供 Codex 分析；文件最大 8 MB，送入会话的正文最多 12 万字，处理后立即删除临时文件 |
+| 私聊/群聊发 CSV、TSV、TXT、Markdown、JSON、HTML 文件 | 有 `im:message:readonly` 权限时下载到本机临时目录，解析文字供 Codex 分析；HTML 只静态提取页面文字和脚本中的中文说明，不执行脚本或请求链接；文件最大 8 MB，送入会话的正文最多 12 万字，处理后立即删除临时文件 |
 | 私聊/群聊发其它文件、图片、音视频 | 建立 Codex 会话并说明附件正文尚不可读；不猜测内容 |
 | 云文档评论明确 @ 机器人 | 可选评论通道；Docx 可读正文，其它文档类型先只读取评论文字 |
 | 点击自定义机器人菜单、操作交互卡片 | 目前机器人未配置菜单或发出卡片；若以后增加，需要按动作语义接入 `application.bot.menu_v6` 或 `card.action.trigger` |
