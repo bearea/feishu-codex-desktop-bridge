@@ -74,8 +74,15 @@ class ExportPolicyTests(unittest.TestCase):
         excerpt = "这个产品的完整原始描述包含内部流程和实现细节，需要在本机处理后才能形成可公开的概括结论。"
         item = {"type": "mcpToolCall", "result": {"content": [{"text": excerpt}]}}
         self.assertTrue(has_long_verbatim_overlap(excerpt, [item], window=30))
+        self.assertTrue(has_long_verbatim_overlap(excerpt, [item]))
         self.assertTrue(has_long_verbatim_overlap("文档原话是“完整原始描述包含内部流程”", [item]))
         self.assertFalse(has_long_verbatim_overlap("只概括主题类别。", [item], window=30))
+
+    def test_short_factual_overlap_does_not_block_a_summary(self):
+        source = "近端 SIT 的服务清单：Nova BE／Worker、SmartOPS BE／Worker 四个服务已完成发布和端测。"
+        summary = "LSIT 发布：按最新代码重新构建，Nova BE／Worker、SmartOPS BE／Worker 四个服务均已更新并确认就绪。"
+        item = {"type": "mcpToolCall", "result": {"content": [{"text": source}]}}
+        self.assertFalse(has_long_verbatim_overlap(summary, [item]))
 
     def test_review_poll_stays_in_original_chat_without_reopening(self):
         record = pending_record()

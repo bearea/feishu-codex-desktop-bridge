@@ -392,9 +392,12 @@ def review_answer(message_id: str, record: dict, outbox: dict[str, dict]) -> str
     answer = record["answer"]
     policy = export_decision(answer, question=record.get("question", ""),
                              unsupported_tool=record.get("unsupported_tool", True))
-    if (policy == "block" or record.get("source_excerpt_detected")
-            or "source_excerpt_detected" not in record):
+    if policy == "block":
         return "这条答复包含不适合在飞书发送的原始内容或敏感字段，已在本机拦截。请换一种不涉及原文或凭证的问法。"
+    if record.get("source_excerpt_detected"):
+        return "这条答复与本地资料有较长的逐字重合，已在本机拦截。请改问摘要或分析，不要引用原文。"
+    if "source_excerpt_detected" not in record:
+        return "这条答复的资料引用检查尚未完成，暂未发送。请稍后重试。"
     if policy == "auto":
         return answer
     if record.get("review_decision") == "allow":

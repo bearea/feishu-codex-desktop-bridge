@@ -101,7 +101,7 @@ def export_decision(answer: str, *, question: str = "", unsupported_tool: bool =
     return "auto"
 
 
-def has_long_verbatim_overlap(answer: str, tool_items: list[dict], window: int = 30) -> bool:
+def has_long_verbatim_overlap(answer: str, tool_items: list[dict], window: int = 40) -> bool:
     """Block copied passages and shorter attributed quotes from local sources."""
     normalized_answer = " ".join(answer.split())
     quotes = [" ".join(quote.split()) for quote in
