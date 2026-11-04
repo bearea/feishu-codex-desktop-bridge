@@ -3,6 +3,7 @@
 import plistlib
 import json
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,28 @@ from scripts import setup
 
 
 class SetupTests(unittest.TestCase):
+    def test_global_mcp_install_preserves_config_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            codex_home = home / ".codex"
+            codex_home.mkdir()
+            config = codex_home / "config.toml"
+            original = '[mcp_servers.other]\ncommand = "true"\n'
+            config.write_text(original)
+            project = home / "project"
+            with patch.object(Path, "home", return_value=home):
+                setup.ensure_global_attachment_mcp(project, "test_bot")
+                installed = config.read_text()
+                setup.ensure_global_attachment_mcp(project, "test_bot")
+            self.assertEqual(config.read_text(), installed)
+            parsed = tomllib.loads(installed)
+            self.assertEqual(parsed["mcp_servers"]["other"]["command"], "true")
+            self.assertEqual(parsed["mcp_servers"]["futou_attachment"]["env"][
+                "FEISHU_CODEX_LARK_PROFILE"], "test_bot")
+            backups = list(codex_home.glob("config.toml.before-futou-attachment-*"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(), original)
+
     def test_relative_project_path_is_repo_relative(self):
         self.assertEqual(setup.project_path({"project_dir": "./feishu-message"}),
                          setup.ROOT / "feishu-message")

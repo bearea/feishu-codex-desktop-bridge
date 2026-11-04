@@ -105,7 +105,7 @@ cd feishu-codex-desktop-bridge
 python3 scripts/setup.py --prepare
 ```
 
-`--prepare` 生成未跟踪的 `config.json` 和 `feishu-message/AGENTS.md`。接着：
+`--prepare` 生成未跟踪的 `config.json`、`feishu-message/AGENTS.md` 和项目取件工具配置。它还会先备份并校验 `~/.codex/config.toml`，再添加同一个受限取件工具到 Codex 用户配置：当前桌面版可能忽略项目级 MCP 配置，虽然 CLI 能识别。[Codex Desktop 相关问题](https://github.com/openai/codex/issues/13025)。工具登记后要重新启动 Codex Desktop；已打开的旧问答会话可能仍保留旧工具列表，需要新建一次会话。接着：
 
 1. 在 Codex Desktop 把打印出的 `feishu-message` 绝对路径添加为**本地项目**。
 2. 检查 `config.json` 的 `lark_profile`、`project_dir`、`bot_display_name`、`model`、`codex_bundle_id` 与自己的环境一致。`owner_open_id`、`owner_display_name` 仅用于姓名查询失败时的标题回退；它们**不是**发信人白名单。

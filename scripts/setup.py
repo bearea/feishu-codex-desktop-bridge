@@ -12,11 +12,65 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from datetime import datetime
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE = ROOT / "config.example.json"
+ATTACHMENT_TOOL = "fetch_feishu_attachment"
+
+
+def attachment_mcp_spec(project: Path, profile: str) -> dict:
+    return {
+        "command": shutil.which("python3") or sys.executable,
+        "args": [str(ROOT / "attachment_mcp.py")],
+        "enabled_tools": [ATTACHMENT_TOOL],
+        "default_tools_approval_mode": "approve",
+        "tool_timeout_sec": 200,
+        "env": {"FEISHU_CODEX_PROJECT_DIR": str(project),
+                "FEISHU_CODEX_LARK_PROFILE": profile},
+    }
+
+
+def attachment_mcp_toml(project: Path, profile: str) -> str:
+    spec = attachment_mcp_spec(project, profile)
+    return (
+        "[mcp_servers.futou_attachment]\n"
+        f"command = {json.dumps(spec['command'])}\n"
+        f"args = [{json.dumps(spec['args'][0])}]\n"
+        f"enabled_tools = [{json.dumps(ATTACHMENT_TOOL)}]\n"
+        "default_tools_approval_mode = \"approve\"\n"
+        "tool_timeout_sec = 200\n"
+        "\n[mcp_servers.futou_attachment.env]\n"
+        f"FEISHU_CODEX_PROJECT_DIR = {json.dumps(str(project))}\n"
+        f"FEISHU_CODEX_LARK_PROFILE = {json.dumps(profile)}\n"
+    )
+
+
+def ensure_global_attachment_mcp(project: Path, profile: str) -> None:
+    """Desktop may ignore project MCP config; add one validated user-level entry."""
+    path = Path.home() / ".codex" / "config.toml"
+    source = path.read_text(encoding="utf-8")
+    current = tomllib.loads(source).get("mcp_servers", {}).get("futou_attachment")
+    expected = attachment_mcp_spec(project, profile)
+    if current == expected:
+        return
+    if current is not None:
+        raise RuntimeError("全局 futou_attachment 配置与当前项目不同；请先检查 ~/.codex/config.toml")
+    updated = source.rstrip() + "\n\n" + attachment_mcp_toml(project, profile)
+    assert tomllib.loads(updated)["mcp_servers"]["futou_attachment"] == expected
+    backup = path.with_name("config.toml.before-futou-attachment-" +
+                            datetime.now().strftime("%Y%m%d-%H%M%S"))
+    shutil.copy2(path, backup)
+    temporary = path.with_name("config.toml.futou.tmp")
+    try:
+        temporary.write_text(updated, encoding="utf-8")
+        temporary.chmod(0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    print(f"已登记 Codex Desktop 取件工具；原配置备份：{backup}")
 
 
 def config_path(raw: str | None) -> Path:
@@ -46,20 +100,12 @@ def prepare(path: Path) -> None:
     target = project / "AGENTS.md"
     if not target.exists():
         shutil.copy2(ROOT / "project" / "AGENTS.md", target)
+    profile = str(data.get("lark_profile") or "futou_bot")
     mcp_config = project / ".codex" / "config.toml"
     if not mcp_config.exists():
         mcp_config.parent.mkdir(parents=True, exist_ok=True)
-        mcp_config.write_text(
-            "[mcp_servers.futou_attachment]\n"
-            f"command = {json.dumps(shutil.which('python3') or sys.executable)}\n"
-            f"args = [{json.dumps(str(ROOT / 'attachment_mcp.py'))}]\n"
-            "enabled_tools = [\"fetch_feishu_attachment\"]\n"
-            "default_tools_approval_mode = \"approve\"\n"
-            "tool_timeout_sec = 200\n"
-            "\n[mcp_servers.futou_attachment.env]\n"
-            f"FEISHU_CODEX_PROJECT_DIR = {json.dumps(str(project))}\n"
-            f"FEISHU_CODEX_LARK_PROFILE = {json.dumps(str(data.get('lark_profile') or 'futou_bot'))}\n",
-            encoding="utf-8")
+        mcp_config.write_text(attachment_mcp_toml(project, profile), encoding="utf-8")
+    ensure_global_attachment_mcp(project, profile)
     print(f"Codex 项目目录：{project}")
     print("请在 Codex Desktop 将此目录添加为本地项目，再填写 config.json。")
 
@@ -84,12 +130,14 @@ def check(path: Path) -> tuple[dict, Path, dict[str, str]]:
         raise RuntimeError("项目取件工具尚未配置；先运行 --prepare")
     mcp = tomllib.loads(mcp_config.read_text(encoding="utf-8"))
     server = mcp.get("mcp_servers", {}).get("futou_attachment", {})
-    if (server.get("args") != [str(ROOT / "attachment_mcp.py")]
-            or server.get("env", {}).get("FEISHU_CODEX_PROJECT_DIR") != str(project)
-            or server.get("env", {}).get("FEISHU_CODEX_LARK_PROFILE") != str(data.get("lark_profile") or "futou_bot")
-            or server.get("enabled_tools") != ["fetch_feishu_attachment"]
-            or server.get("default_tools_approval_mode") != "approve"):
+    expected_mcp = attachment_mcp_spec(project, str(data.get("lark_profile") or "futou_bot"))
+    if server != expected_mcp:
         raise RuntimeError("项目取件工具配置与当前桥接目录不一致；请检查 .codex/config.toml")
+    global_config = Path.home() / ".codex" / "config.toml"
+    global_server = tomllib.loads(global_config.read_text(encoding="utf-8")).get(
+        "mcp_servers", {}).get("futou_attachment")
+    if global_server != expected_mcp:
+        raise RuntimeError("Codex Desktop 取件工具未登记；请运行 --prepare")
     profile = str(data.get("lark_profile") or "")
     if not profile:
         raise RuntimeError("lark_profile 不能为空")
