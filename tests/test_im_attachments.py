@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import bridge
-from attachment_mcp import dispatch
+from attachment_mcp import dispatch, video_frames
 from attachment_store import fetch, register
 from im_attachments import download_original, file_refs
 from privacy import unsupported_tool_used
@@ -91,6 +91,30 @@ class AttachmentTests(unittest.TestCase):
             result = dispatch({"method": "tools/call", "params": {
                 "name": "fetch_feishu_attachment", "arguments": {"handle": "issued"}}})
         self.assertIn("/tmp/a.mp4", result["content"][0]["text"])
+
+    def test_video_preview_returns_small_images_without_frame_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "clip.mp4"
+            path.write_bytes(b"fake video")
+            response = type("Result", (), {"returncode": 0, "stdout": b"\xff\xd8jpeg\xff\xd9",
+                                           "stderr": b""})()
+            with patch("attachment_mcp.shutil.which", return_value="/usr/bin/ffmpeg"), \
+                 patch("attachment_mcp.subprocess.run", return_value=response) as run:
+                content = video_frames(path, [0.5, 2.5])
+            self.assertEqual(sum(item["type"] == "image" for item in content), 2)
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+            self.assertIn("file,pipe", run.call_args.args[0])
+
+    def test_video_preview_rejects_nonvideo_and_too_many_frames(self):
+        with self.assertRaisesRegex(ValueError, "只支持视频"):
+            video_frames(Path("report.csv"), [0.5])
+        with patch("attachment_mcp.fetch", return_value={"path": "/tmp/video.mp4",
+                                                          "bytes": 3, "name": "video.mp4"}), \
+             patch.dict("os.environ", {"FEISHU_CODEX_PROJECT_DIR": "/tmp"}):
+            with self.assertRaisesRegex(ValueError, "最多预览 4 个"):
+                dispatch({"method": "tools/call", "params": {
+                    "name": "fetch_feishu_attachment", "arguments": {
+                        "handle": "issued", "preview_seconds": [0, 1, 2, 3, 4]}}})
 
     def test_only_this_message_handle_is_allowed_in_codex_turn(self):
         item = {"type": "mcpToolCall", "server": "futou_attachment",
