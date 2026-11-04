@@ -27,9 +27,8 @@ from attachment_store import register as register_attachments
 from comment_channel import (COMMENT_EVENT, comment_notice_id, load_comment_request,
                              publish_comment_answer)
 from manual_reply import classify_owner_message
-from privacy import (OPERATION_REFUSAL, PERSONAL_REFUSAL, export_decision,
-                     has_long_verbatim_overlap, is_personal_question,
-                     is_prohibited_operation_request, normalize_answer,
+from privacy import (export_decision, has_long_verbatim_overlap,
+                     normalize_answer, refusal_for_question,
                      unsupported_tool_used)
 
 
@@ -820,10 +819,11 @@ def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str
             record["is_whole"] = is_whole
             record["is_solved"] = is_solved
             record["comment_loaded"] = True
-            if is_personal_question(question) or is_prohibited_operation_request(question):
+            refusal = refusal_for_question(question)
+            if refusal:
                 record["question"] = ""
-                record["answer"] = (PERSONAL_REFUSAL if is_personal_question(question)
-                                    else OPERATION_REFUSAL)
+                record["source_context"] = ""
+                record["answer"] = refusal
                 record["policy_refusal"] = True
             save_outbox(outbox)
         if record.get("attachment_refs") and not record.get("attachment_handles"):
@@ -941,9 +941,7 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
     if not question:
         return
     original_question = question
-    refusal = (PERSONAL_REFUSAL if is_personal_question(original_question)
-               else OPERATION_REFUSAL if is_prohibited_operation_request(user_content)
-               else None)
+    refusal = refusal_for_question(user_content)
     if refusal:
         log(f"blocked prohibited request {message_id}")
         outbox[message_id] = {

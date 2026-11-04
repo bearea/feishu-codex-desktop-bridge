@@ -7,7 +7,8 @@ import re
 
 
 OUT_OF_SCOPE = "福头目前只回答产品功能、使用、需求和故障相关的问题。请换一个产品问题再问我。"
-PERSONAL_REFUSAL = "福头不能查询或回答个人信息、私人项目及私人会话的内容。请改问已授权产品项目的问题。"
+PERSONAL_REFUSAL = "福头不能查询或回答个人信息、个人近况、私人项目及私人会话的内容。请改问具体的产品问题。"
+SENSITIVE_REFUSAL = "福头不能提供凭证、密钥、敏感配置或原始业务数据。请改问不涉及这些内容的产品问题。"
 OPERATION_REFUSAL = "福头只提供产品问题的只读分析，不能替你运行服务、代码、脚本或测试，也不能修改项目。请改问现状、原因或实施建议。"
 
 # Reject these requests before they reach a Codex chat or any local tool.
@@ -17,6 +18,19 @@ PERSONAL_QUESTION_PATTERNS = (
     re.compile(r"(?:我的|你的|他的|她的|家人|同事|员工|客户).{0,12}(?:生日|住址|家庭|婚姻|收入|工资|薪资|资产|病历|病史|健康|身份证|手机号|银行卡|私人邮箱)"),
     re.compile(r"[\u4e00-\u9fff]{2,4}的(?:生日|住址|家庭|婚姻|收入|工资|薪资|资产|病历|病史|健康|身份证|手机号|银行卡|私人邮箱)"),
     re.compile(r"(?:查|找|列出|显示|透露|告诉|读取|导出|总结|搜索|提供).{0,30}(?:个人信息|隐私信息|身份证号|手机号|银行卡号|家庭住址|病历|私人邮箱)"),
+)
+
+PERSONAL_ACTIVITY_PATTERN = re.compile(
+    r"(?P<subject>[\u4e00-\u9fff]{1,12})(?:最近|近况|这段时间|现在|今天|昨天|本周|这周)"
+    r".{0,12}(?:在干什么|干嘛|干啥|做什么|做了什么|忙什么|忙啥|做啥|怎么样|如何|在哪|在哪里|去了哪|去哪里|行踪|动态|负责什么|参与什么)")
+PERSONAL_ACTIVITY_DIRECT_PATTERN = re.compile(
+    r"(?P<subject>[\u4e00-\u9fff]{1,12})(?:在干什么|在干嘛|在干啥|在忙什么|在做什么|在哪里|在哪儿|去了哪|去哪里)")
+NON_PERSON_SUBJECTS = ("项目", "产品", "系统", "服务", "应用", "页面", "接口", "数据", "报告", "指标", "审批", "审批流", "机器人", "任务", "流程", "平台", "功能", "模块", "代码", "仓库", "测试", "环境", "数据库", "前端", "后端", "公司", "部门", "团队")
+
+SENSITIVE_REQUEST_PATTERNS = (
+    re.compile(r"(?:密码|口令|密钥|凭证|令牌|token|secret|api.?key|连接串|环境变量)(?:是(?:什么|多少)|具体值|原文|内容|清单|列表|发给我|给我|告诉我|贴出来|展示出来)", re.I),
+    re.compile(r"(?:把|将).{0,25}(?:密码|口令|密钥|凭证|令牌|token|secret|api.?key|连接串|环境变量).{0,20}(?:发给|告诉|贴出|输出|展示|导出)", re.I),
+    re.compile(r"(?:查询|读取|找出|列出|导出|给我|发我|展示).{0,20}(?:完整|全部|所有|原始|真实|具体).{0,15}(?:客户数据|业务数据|数据库记录|生产数据|线上数据|配置值|环境变量|凭证|密钥|密码|token|api.?key)", re.I),
 )
 
 OPERATION_REQUEST_PATTERNS = (
@@ -64,7 +78,28 @@ SECRET_PATTERNS = (
 
 
 def is_personal_question(question: str) -> bool:
-    return any(pattern.search(question) for pattern in PERSONAL_QUESTION_PATTERNS)
+    if any(pattern.search(question) for pattern in PERSONAL_QUESTION_PATTERNS):
+        return True
+    activity = PERSONAL_ACTIVITY_PATTERN.search(question) or PERSONAL_ACTIVITY_DIRECT_PATTERN.search(question)
+    if not activity:
+        return False
+    subject = re.sub(r"^(?:请问|请分析|请查|帮我看看|帮我查|你知道|我想知道|问一下|关于|查查|看下|看看)+", "",
+                     activity.group("subject"))
+    return bool(subject) and not subject.endswith(NON_PERSON_SUBJECTS)
+
+
+def is_sensitive_request(question: str) -> bool:
+    return any(pattern.search(question) for pattern in SENSITIVE_REQUEST_PATTERNS)
+
+
+def refusal_for_question(question: str) -> str | None:
+    if is_personal_question(question):
+        return PERSONAL_REFUSAL
+    if is_sensitive_request(question):
+        return SENSITIVE_REFUSAL
+    if is_prohibited_operation_request(question):
+        return OPERATION_REFUSAL
+    return None
 
 
 def is_prohibited_operation_request(question: str) -> bool:
@@ -158,7 +193,7 @@ def export_decision(answer: str, *, question: str = "", unsupported_tool: bool =
     """Return block, review, or auto based on content and tool provenance."""
     if not answer or len(answer) > 9000:
         return "block"
-    if is_personal_question(question) or is_prohibited_operation_request(question) or unsupported_tool:
+    if refusal_for_question(question) or unsupported_tool:
         return "block"
     if any(pattern.search(answer) for pattern in SECRET_PATTERNS):
         return "block"
