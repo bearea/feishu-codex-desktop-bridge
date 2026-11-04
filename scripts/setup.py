@@ -46,6 +46,20 @@ def prepare(path: Path) -> None:
     target = project / "AGENTS.md"
     if not target.exists():
         shutil.copy2(ROOT / "project" / "AGENTS.md", target)
+    mcp_config = project / ".codex" / "config.toml"
+    if not mcp_config.exists():
+        mcp_config.parent.mkdir(parents=True, exist_ok=True)
+        mcp_config.write_text(
+            "[mcp_servers.futou_attachment]\n"
+            f"command = {json.dumps(shutil.which('python3') or sys.executable)}\n"
+            f"args = [{json.dumps(str(ROOT / 'attachment_mcp.py'))}]\n"
+            "enabled_tools = [\"fetch_feishu_attachment\"]\n"
+            "default_tools_approval_mode = \"approve\"\n"
+            "tool_timeout_sec = 200\n"
+            "\n[mcp_servers.futou_attachment.env]\n"
+            f"FEISHU_CODEX_PROJECT_DIR = {json.dumps(str(project))}\n"
+            f"FEISHU_CODEX_LARK_PROFILE = {json.dumps(str(data.get('lark_profile') or 'futou_bot'))}\n",
+            encoding="utf-8")
     print(f"Codex 项目目录：{project}")
     print("请在 Codex Desktop 将此目录添加为本地项目，再填写 config.json。")
 
@@ -65,6 +79,17 @@ def check(path: Path) -> tuple[dict, Path, dict[str, str]]:
     project = project_path(data)
     if not project.is_dir() or not (project / "AGENTS.md").is_file():
         raise RuntimeError(f"项目目录或 AGENTS.md 不存在：{project}；先运行 --prepare")
+    mcp_config = project / ".codex" / "config.toml"
+    if not mcp_config.is_file():
+        raise RuntimeError("项目取件工具尚未配置；先运行 --prepare")
+    mcp = tomllib.loads(mcp_config.read_text(encoding="utf-8"))
+    server = mcp.get("mcp_servers", {}).get("futou_attachment", {})
+    if (server.get("args") != [str(ROOT / "attachment_mcp.py")]
+            or server.get("env", {}).get("FEISHU_CODEX_PROJECT_DIR") != str(project)
+            or server.get("env", {}).get("FEISHU_CODEX_LARK_PROFILE") != str(data.get("lark_profile") or "futou_bot")
+            or server.get("enabled_tools") != ["fetch_feishu_attachment"]
+            or server.get("default_tools_approval_mode") != "approve"):
+        raise RuntimeError("项目取件工具配置与当前桥接目录不一致；请检查 .codex/config.toml")
     profile = str(data.get("lark_profile") or "")
     if not profile:
         raise RuntimeError("lark_profile 不能为空")

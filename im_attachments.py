@@ -1,157 +1,74 @@
-"""Read supported Feishu IM attachments with the bot's own permissions."""
+"""Extract Feishu file references and fetch original bytes on explicit request."""
 
 from __future__ import annotations
 
-import csv
-import html
-import io
 import json
 import re
 import subprocess
-import tempfile
-from html.parser import HTMLParser
 from pathlib import Path
 
 
 FILE_TAG = re.compile(r'<file\s+key="(file_[A-Za-z0-9_-]+)"\s+name="([^"]+)"\s*/?>')
-MAX_BYTES = 8 * 1024 * 1024
-MAX_TEXT = 120_000
-SUPPORTED_SUFFIXES = {".csv", ".tsv", ".txt", ".md", ".json", ".html", ".htm"}
-SCRIPT_STRINGS = re.compile(r'''(?:"((?:\\.|[^"\\]){2,500})"|'((?:\\.|[^'\\]){2,500})')''')
-
-
-class _HTMLText(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.hidden: str | None = None
-        self.visible: list[str] = []
-        self.scripts: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"script", "style", "svg"}:
-            self.hidden = tag
-        elif tag in {"h1", "h2", "h3", "h4", "p", "li", "tr", "br", "section"}:
-            self.visible.append("\n")
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == self.hidden:
-            self.hidden = None
-        elif not self.hidden and tag in {"h1", "h2", "h3", "h4", "p", "li", "tr", "section"}:
-            self.visible.append("\n")
-
-    def handle_data(self, data: str) -> None:
-        if self.hidden == "script":
-            self.scripts.append(data)
-        elif not self.hidden and data.strip():
-            self.visible.append(data)
-
-
-def _html_text(data: bytes) -> str:
-    parser = _HTMLText()
-    parser.feed(_decode(data))
-    visible = "\n".join(
-        line.strip() for line in "".join(parser.visible).splitlines() if line.strip())
-    labels: list[str] = []
-    seen: set[str] = set()
-    for match in SCRIPT_STRINGS.finditer("\n".join(parser.scripts)):
-        value = match.group(1) or match.group(2)
-        value = html.unescape(" ".join(value.replace("\\n", " ").split()))
-        if (not re.search(r"[\u4e00-\u9fff]", value) or value in seen or
-                "<" in value or ">" in value):
-            continue
-        seen.add(value)
-        labels.append(value)
-    result = ("HTML 页面可见文字：\n" + visible +
-              "\n\n脚本中的静态中文说明（仅提取文本，没有执行脚本）：\n" +
-              "\n".join(labels) +
-              "\n\n[未执行页面脚本，也未调用接口；动态数值、实际运行状态和外部链接内容均未验证。]")
-    return result[:MAX_TEXT] + ("\n[文件较长，后续内容未读取。]" if len(result) > MAX_TEXT else "")
+MAX_BYTES = 512 * 1024 * 1024
 
 
 def file_refs(content: str, message_type: str) -> list[dict[str, str]]:
     refs = [{"key": key, "name": name} for key, name in FILE_TAG.findall(content)]
     if refs:
         return refs
-    if message_type != "file":
+    if message_type not in {"file", "audio", "video", "media", "image"}:
         return []
     try:
         payload = json.loads(content)
     except ValueError:
         return []
-    key = payload.get("file_key") or payload.get("fileKey")
+    key = (payload.get("file_key") or payload.get("fileKey") or
+           payload.get("image_key") or payload.get("imageKey"))
     name = payload.get("file_name") or payload.get("fileName") or "附件"
-    if isinstance(key, str) and re.fullmatch(r"file_[A-Za-z0-9_-]+", key):
+    if isinstance(key, str) and re.fullmatch(r"(?:file_|img_)[A-Za-z0-9_-]+", key):
         return [{"key": key, "name": str(name)}]
     return []
 
 
-def _decode(data: bytes) -> str:
-    for encoding in ("utf-8-sig", "gb18030"):
+def download_original(message_id: str, ref: dict[str, str], profile: str,
+                      destination: Path) -> dict[str, object]:
+    """Download the untouched Feishu resource; never decode or insert it in a prompt."""
+    if not re.fullmatch(r"om_[A-Za-z0-9_-]+", message_id):
+        raise ValueError("无效的飞书消息 ID")
+    if not re.fullmatch(r"(?:file_|img_)[A-Za-z0-9_-]+", ref["key"]):
+        raise ValueError("无效的飞书附件 ID")
+    resource_type = "image" if ref["key"].startswith("img_") else "file"
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if destination.is_symlink():
+        raise RuntimeError("附件缓存路径异常")
+    if destination.is_file():
+        return {"path": str(destination), "bytes": destination.stat().st_size,
+                "name": ref["name"]}
+    temporary = destination.with_name(destination.name + ".download")
+    temporary.unlink(missing_ok=True)
+    result = subprocess.run(
+        ["lark-cli", "--profile", profile, "im", "+messages-resources-download",
+         "--message-id", message_id, "--file-key", ref["key"], "--type", resource_type,
+         "--as", "bot", "--output", temporary.name, "--json"],
+        cwd=destination.parent, text=True, capture_output=True, timeout=180, check=False,
+    )
+    if result.returncode:
         try:
-            return data.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    raise ValueError("文件不是可识别的 UTF-8 或 GB18030 文本")
-
-
-def _csv_text(data: bytes, *, delimiter: str) -> str:
-    source = _decode(data)
-    rows = csv.reader(io.StringIO(source), delimiter=delimiter)
-    rendered: list[str] = []
-    size = 0
-    for number, row in enumerate(rows, 1):
-        line = f"第 {number} 行：" + "；".join(
-            f"第 {index} 列={value.strip()}" for index, value in enumerate(row, 1))
-        if size + len(line) > MAX_TEXT:
-            rendered.append("[文件较长，后续行未读取；答复须说明仅依据已读取部分。]")
-            break
-        rendered.append(line)
-        size += len(line) + 1
-    return "\n".join(rendered)
-
-
-def _file_text(name: str, data: bytes) -> str:
-    suffix = Path(name).suffix.lower()
-    if suffix == ".csv":
-        return _csv_text(data, delimiter=",")
-    if suffix == ".tsv":
-        return _csv_text(data, delimiter="\t")
-    if suffix in {".html", ".htm"}:
-        return _html_text(data)
-    if suffix in {".txt", ".md", ".json"}:
-        content = _decode(data)
-        return content[:MAX_TEXT] + (
-            "\n[文件较长，后续内容未读取；答复须说明仅依据已读取部分。]"
-            if len(content) > MAX_TEXT else "")
-    raise ValueError(f"暂不支持读取 {suffix or '未知格式'} 文件正文")
-
-
-def load_file(message_id: str, ref: dict[str, str], profile: str, state_dir: Path) -> str:
-    """Download into a private temporary directory, then return extracted text."""
-    suffix = Path(ref["name"]).suffix.lower()
-    if suffix not in SUPPORTED_SUFFIXES:
-        raise ValueError(f"暂不支持读取 {suffix or '未知格式'} 文件正文")
-    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="im-file-", dir=state_dir) as directory:
-        target = Path(directory) / f"attachment{suffix}"
-        result = subprocess.run(
-            ["lark-cli", "--profile", profile, "im", "+messages-resources-download",
-             "--message-id", message_id, "--file-key", ref["key"], "--type", "file",
-             "--as", "bot", "--output", target.name, "--json"],
-            cwd=directory, text=True, capture_output=True, timeout=60, check=False,
-        )
-        if result.returncode:
-            try:
-                payload = json.loads(result.stderr or result.stdout)
-                error = payload.get("error") or {}
-                detail = str(error.get("message") or error.get("subtype") or "下载失败")
-            except ValueError:
-                detail = f"下载接口返回状态 {result.returncode}"
-            if "im:message" in detail or "99991672" in detail:
-                raise PermissionError("机器人缺少应用身份消息只读权限，暂时无法下载飞书附件")
-            raise RuntimeError(f"飞书附件下载失败：{detail[:250]}")
-        if not target.is_file():
-            raise RuntimeError("飞书报告下载成功，但本机未收到附件文件")
-        if target.stat().st_size > MAX_BYTES:
-            raise ValueError("附件超过 8 MB 的本机读取上限")
-        return _file_text(ref["name"], target.read_bytes())
+            payload = json.loads(result.stderr or result.stdout)
+            error = payload.get("error") or {}
+            detail = str(error.get("message") or error.get("subtype") or "下载失败")
+        except ValueError:
+            detail = f"下载接口返回状态 {result.returncode}"
+        temporary.unlink(missing_ok=True)
+        if "im:message" in detail or "99991672" in detail:
+            raise PermissionError("机器人缺少应用身份消息只读权限，无法下载飞书附件")
+        raise RuntimeError(f"飞书附件下载失败：{detail[:250]}")
+    if not temporary.is_file():
+        raise RuntimeError("飞书报告下载成功，但本机未收到原文件")
+    size = temporary.stat().st_size
+    if size > MAX_BYTES:
+        temporary.unlink()
+        raise ValueError("附件超过 512 MB 的本机取件上限")
+    temporary.replace(destination)
+    destination.chmod(0o600)
+    return {"path": str(destination), "bytes": size, "name": ref["name"]}

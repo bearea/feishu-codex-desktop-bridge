@@ -58,13 +58,20 @@ def normalize_answer(answer: str) -> str:
     return match.group("body").strip() if match else answer.strip()
 
 
-def unsupported_tool_used(items: list[dict], *, allow_history: bool) -> bool:
-    """Allow only the two read-only Codex chat tools when explicitly configured."""
+def unsupported_tool_used(items: list[dict], *, allow_history: bool,
+                          attachment_handles: set[str] | None = None) -> bool:
+    """Allow only configured history reads and scoped attachment retrieval."""
     for item in items:
         kind = item.get("type")
         if kind == "mcpToolCall":
-            if not (allow_history and item.get("server") == "codex_app"
-                    and item.get("tool") in ("list_threads", "read_thread")):
+            history_ok = (allow_history and item.get("server") == "codex_app"
+                          and item.get("tool") in ("list_threads", "read_thread"))
+            arguments = item.get("arguments") or {}
+            attachment_ok = (item.get("server") == "futou_attachment"
+                             and item.get("tool") == "fetch_feishu_attachment"
+                             and isinstance(arguments, dict)
+                             and arguments.get("handle") in (attachment_handles or set()))
+            if not (history_ok or attachment_ok):
                 return True
         elif kind in ("webSearch", "fileChange", "dynamicToolCall"):
             return True
