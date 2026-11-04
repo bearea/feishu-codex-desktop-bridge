@@ -62,7 +62,7 @@ codex plugin add feishu-codex-desktop-bridge@feishu-codex-bridge
 
 1. 在[飞书开放平台](https://open.feishu.cn/app)创建或选择企业自建应用，开启**机器人**。
 2. 在“事件与回调”选择**长连接接收事件**，订阅 `im.message.receive_v1`。
-3. 开启与当前实现相符的应用身份权限：私聊接收 `im:message.p2p_msg:readonly`、机器人发送 `im:message:send_as_bot`。如需群里 @ 机器人，再开启 `im:message.group_at_msg.include_bot:readonly`；如需标题显示提问人姓名，开启 `contact:user.base:readonly` 和按飞书后台要求的通讯录基础信息权限 `contact:contact.base:readonly`，并设置可访问的数据范围。
+3. 开启与当前实现相符的应用身份权限：私聊接收 `im:message.p2p_msg:readonly`、机器人发送 `im:message:send_as_bot`。如需群里 @ 机器人，再开启 `im:message.group_at_msg.include_bot:readonly`；如需标题显示提问人姓名，开启 `contact:user.base:readonly` 和按飞书后台要求的通讯录基础信息权限 `contact:contact.base:readonly`，并将通讯录可访问的数据范围覆盖实际提问人。若要读取私聊中的文件附件，另开通 `im:message:readonly`；这项权限允许应用读取其可访问聊天中的消息，桥接也会用原消息详情中的发送者姓名作为通讯录查询失败时的备用来源。开通前请核对应用的可用人员与数据范围。
 4. 按飞书的版本审核/发布流程让权限与可用人员生效。**后台勾选权限不等于已对所有员工生效。** 群聊及其他员工的端到端效果尚未在当前实例验证。
 5. 安装飞书 CLI 并为应用创建独立 profile。App Secret 由 CLI 安全配置保存，**不要**写进本仓库的 `config.json`、启动脚本或命令行参数。
 
@@ -83,7 +83,8 @@ bash scripts/build_comment_cli.sh
 | 飞书动作 | 当前处理 |
 | --- | --- |
 | 私聊发文字、群里 @ 机器人 | 进入 Codex 原生会话并回到原聊天；群聊仍需对应权限和实测 |
-| 私聊/群聊发图片、文件、音视频 | 建立 Codex 会话并说明附件正文尚不可读，请补文字；不猜测附件 |
+| 私聊/群聊发 CSV、TSV、TXT、Markdown、JSON 文件 | 有 `im:message:readonly` 权限时下载到本机临时目录，解析文字供 Codex 分析；文件最大 8 MB，送入会话的正文最多 12 万字，处理后立即删除临时文件 |
+| 私聊/群聊发其它文件、图片、音视频 | 建立 Codex 会话并说明附件正文尚不可读；不猜测内容 |
 | 云文档评论明确 @ 机器人 | 可选评论通道；Docx 可读正文，其它文档类型先只读取评论文字 |
 | 点击自定义机器人菜单、操作交互卡片 | 目前机器人未配置菜单或发出卡片；若以后增加，需要按动作语义接入 `application.bot.menu_v6` 或 `card.action.trigger` |
 | 文档修改、协作者增删、已读、群成员变化 | 不当作提问，不进入 Codex |

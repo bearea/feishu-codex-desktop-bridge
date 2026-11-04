@@ -1,5 +1,6 @@
 """Check the routing and duplicate-turn rules without using live services."""
 
+import json
 import unittest
 from unittest.mock import patch
 
@@ -60,6 +61,27 @@ class RoutingTests(unittest.TestCase):
         self.assertIn("同事甲", title)
         self.assertIn("审批状态为何不同", title)
         self.assertNotIn("新会话：", title)
+
+    def test_sender_name_in_event_is_kept_for_title(self):
+        event = {"type": "im.message.receive_v1", "message_id": "om_named123",
+                 "sender_type": "user", "chat_type": "p2p", "message_type": "text",
+                 "chat_id": "oc_named123", "sender_id": "ou_named123",
+                 "sender_name": "同事乙", "content": "如何使用？"}
+        outbox = {}
+        with patch.object(bridge, "save_outbox"), patch.object(bridge, "flush_outbox"):
+            bridge.handle(event, set(), outbox, {})
+        self.assertIn("同事乙", bridge.thread_title(outbox["om_named123"]))
+
+    def test_message_detail_supplies_name_outside_contact_range(self):
+        record = {"sender_id": "ou_named123", "message_id": "om_named123"}
+        contact = type("Result", (), {"returncode": 1,
+            "stderr": json.dumps({"error": {"code": 41050}}), "stdout": ""})()
+        message = type("Result", (), {"returncode": 0, "stderr": "",
+            "stdout": json.dumps({"ok": True, "data": {"messages": [{
+                "message_id": "om_named123", "sender": {"id": "ou_named123", "name": "同事丙"}}]}})})()
+        with patch.object(bridge.subprocess, "run", side_effect=[contact, message]) as run:
+            self.assertEqual(bridge.lookup_sender_name(record), "同事丙")
+        self.assertIn("+messages-mget", run.call_args.args[0])
 
     def test_reply_idempotency_key_fits_cli_limit(self):
         key = bridge.idempotency_key("om_example", "reply")
