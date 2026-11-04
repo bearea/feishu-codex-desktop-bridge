@@ -971,10 +971,12 @@ def consume_comment_events(incoming: queue.Queue[dict]) -> None:
     global comment_listener
     while running:
         try:
+            # Keep stdin open: an unbounded CLI consumer exits when it sees EOF.
             comment_listener = subprocess.Popen(
                 [EVENT_CLI, "--profile", PROFILE, "event", "consume", COMMENT_EVENT,
-                 "--as", "bot", "--timeout", "5m"],
-                cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=1)
+                 "--as", "bot"],
+                cwd=ROOT, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, bufsize=1)
             ready = threading.Event()
 
             def diagnostics(process: subprocess.Popen[str]) -> None:
@@ -1050,13 +1052,15 @@ def main() -> None:
                 return
 
     while running:
+        # Do not time-limit the consumer. Recreating it leaves an event-loss gap.
         listener = subprocess.Popen(
             [
                 EVENT_CLI, "--profile", PROFILE, "event", "consume",
-                "im.message.receive_v1", "--as", "bot", "--timeout", "5m",
+                "im.message.receive_v1", "--as", "bot",
             ],
             cwd=ROOT,
             text=True,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=1,

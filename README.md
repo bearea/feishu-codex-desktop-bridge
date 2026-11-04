@@ -118,6 +118,8 @@ python3 scripts/setup.py --install
 
 `--check` 验证 CLI、飞书 bot profile、本地项目登记与 Desktop IPC socket；它无法代替真实消息验收。`--install` 会生成 `~/Library/LaunchAgents/<launchd_label>.plist`，后台启动桥接，并将日志写到仓库 `logs/`。同一飞书应用只运行**一个**桥接进程。修改代码后可执行 `launchctl kickstart -k "gui/$(id -u)/<launchd_label>"` 重启。
 
+消息和评论事件使用持续连接。不要给常驻 `event consume` 设置定时退出：断开到重新订阅之间的消息可能不会补推。若发现飞书已有消息而 Codex 没有会话，先按飞书消息 ID 核对本机日志与事件总线日志，再通过飞书消息读取接口确认机器人是否仍能访问该消息；重新建立连接不会自动重放漏掉的事件。
+
 插件安装向导与上述常驻桥接是两份内容。仓库发布新版本后，已添加本仓库为插件源的用户可运行 `codex plugin marketplace upgrade feishu-codex-bridge` 刷新插件源，并重开桌面版确认安装向导版本；稳定目录里的桥接代码仍需单独更新：检查本地修改、执行 `git pull --rebase`、运行检查，再重启 LaunchAgent。刷新插件源本身不会替换运行中的 `bridge.py`。
 
 ## 重启与卸载
