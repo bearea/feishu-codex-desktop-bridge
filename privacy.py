@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 
@@ -87,6 +88,36 @@ def mentions_sensitive_project_detail(text: str) -> bool:
     return False
 
 
+def labeled_json_examples_only(answer: str) -> bool:
+    """Accept illustrative JSON blocks while still rejecting executable code fences."""
+    fences = list(re.finditer(r"(?m)^```([^\n]*)\n(.*?)^```[ \t]*$", answer, re.S))
+    if not fences or len(fences) * 2 != answer.count("```"):
+        return False
+    for match in fences:
+        if match.group(1).strip().lower() != "json":
+            return False
+        if len(match.group(2)) > 3000 or not re.search(
+                r"虚构|示意|示例|演示", answer[max(0, match.start() - 600):match.start()]):
+            return False
+        try:
+            example = json.loads(match.group(2))
+        except ValueError:
+            return False
+        def safe_values(value: object) -> bool:
+            if isinstance(value, str):
+                return (len(value) <= 300 and "\n" not in value and
+                        not re.search(r"(?i)\b(?:def|class|import|function|SELECT|INSERT|UPDATE|curl)\s+", value))
+            if isinstance(value, list):
+                return all(safe_values(item) for item in value)
+            if isinstance(value, dict):
+                return all(safe_values(key) and safe_values(item)
+                           for key, item in value.items())
+            return value is None or isinstance(value, (bool, int, float))
+        if not safe_values(example):
+            return False
+    return True
+
+
 def export_decision(answer: str, *, question: str = "", unsupported_tool: bool = False) -> str:
     """Return block, review, or auto based on content and tool provenance."""
     if not answer or len(answer) > 9000:
@@ -99,7 +130,8 @@ def export_decision(answer: str, *, question: str = "", unsupported_tool: bool =
         return "block"
     if any(pattern.search(answer) for pattern in SOURCE_CODE_PATTERNS):
         return "block"
-    if "```" in answer or re.search(r"(?m)^\s*(?:curl\s|SELECT\s|INSERT\s|UPDATE\s|def\s|class\s|import\s|from\s+\w+\s+import\s)", answer, re.I):
+    if ("```" in answer and not labeled_json_examples_only(answer)) or re.search(
+            r"(?m)^\s*(?:curl\s|SELECT\s|INSERT\s|UPDATE\s|def\s|class\s|import\s|from\s+\w+\s+import\s)", answer, re.I):
         return "block"
     if answer.strip() == OUT_OF_SCOPE:
         return "auto"
@@ -112,7 +144,8 @@ def has_long_verbatim_overlap(answer: str, tool_items: list[dict], window: int =
     """Block copied passages and shorter attributed quotes from local sources."""
     normalized_answer = " ".join(answer.split())
     quotes = [" ".join(quote.split()) for quote in
-              re.findall(r'[“「"]([^”」"\n]{12,})[”」"]', answer)]
+              re.findall(r'[“「"]([^”」"\n]{12,})[”」"]', answer)
+              if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", quote)]
     if len(normalized_answer) < window and not quotes:
         return False
 

@@ -41,6 +41,15 @@ class ExportPolicyTests(unittest.TestCase):
         self.assertEqual(export_decision("```python\nprint(1)\n```"), "block")
         self.assertEqual(export_decision("具体实现见 src/nova_be/service.py"), "block")
 
+    def test_labeled_json_example_is_reviewable_without_opening_code_fences(self):
+        example = ('下面是虚构示意，不是线上真实请求：\n\n'
+                   '```json\n[{"guidance_item_id":"示例要点-01",'
+                   '"recommend_questions":["还需要核实什么？"]}]\n```')
+        self.assertNotEqual(export_decision(example, question="说明模型输入输出结构"), "block")
+        self.assertEqual(export_decision("下面是虚构示意：\n```json\n{\"code\":\"def leak(): pass\"}\n```"), "block")
+        self.assertEqual(export_decision("下面是虚构示意：\n```json\n{not json}\n```"), "block")
+        self.assertEqual(export_decision("下面是虚构示意：\n```python\nprint(1)\n```"), "block")
+
     def test_personal_requests_and_output_are_blocked(self):
         self.assertTrue(is_personal_question("请查我家人的生日和住址"))
         self.assertTrue(is_personal_question("总结我的私人项目和其他 Codex 会话"))
@@ -83,6 +92,15 @@ class ExportPolicyTests(unittest.TestCase):
         summary = "LSIT 发布：按最新代码重新构建，Nova BE／Worker、SmartOPS BE／Worker 四个服务均已更新并确认就绪。"
         item = {"type": "mcpToolCall", "result": {"content": [{"text": source}]}}
         self.assertFalse(has_long_verbatim_overlap(summary, [item]))
+
+    def test_json_field_name_is_not_mistaken_for_a_quoted_source_excerpt(self):
+        source = 'class OutputModel:\n    guidance_item_id: str\n    recommend_questions: list[str]'
+        item = {"type": "commandExecution", "aggregatedOutput": source}
+        example = '虚构示意：\n```json\n{"guidance_item_id":"示例要点-01"}\n```'
+        self.assertFalse(has_long_verbatim_overlap(example, [item]))
+        copied = '原文是“该模型将根据访谈文本和任务树生成推荐问题列表”'
+        source_item = {"type": "commandExecution", "aggregatedOutput": copied}
+        self.assertTrue(has_long_verbatim_overlap(copied, [source_item]))
 
     def test_review_poll_stays_in_original_chat_without_reopening(self):
         record = pending_record()
