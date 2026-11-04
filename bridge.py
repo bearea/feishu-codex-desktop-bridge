@@ -526,6 +526,9 @@ def ask_codex(message_id: str, record: dict, threads: dict[str, str], outbox: di
             assign_project(thread_id)
             record["project_bound"] = True
             save_outbox(outbox)
+        # Desktop may have restarted since this chat was created. An existing
+        # app-server thread is not necessarily loaded by the Desktop IPC owner.
+        open_in_desktop(thread_id)
 
     turn_id = record.get("codex_turn_id")
     if not turn_id:
@@ -717,9 +720,12 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
         save_private_json(MANUAL_SEEN, sorted(seen))
 
 
-def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str]) -> None:
+def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str],
+                 *, target_message_id: str | None = None) -> None:
     waiting_threads: set[str] = set()
     for message_id, record in list(outbox.items()):
+        if target_message_id is not None and message_id != target_message_id:
+            continue
         pending_thread = record.get("codex_thread_id") or threads.get(thread_key(record))
         if pending_thread in waiting_threads:
             continue
@@ -809,7 +815,7 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
         if comment_id in done:
             return
         if comment_id in outbox:
-            flush_outbox(outbox, done, threads)
+            flush_outbox(outbox, done, threads, target_message_id=comment_id)
             return
         record = {
             "source_type": "doc_comment", "chat_type": "doc_comment",
@@ -823,7 +829,7 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
         outbox[comment_id] = record
         save_outbox(outbox)
         log(f"processing Feishu document comment {comment_id}")
-        flush_outbox(outbox, done, threads)
+        flush_outbox(outbox, done, threads, target_message_id=comment_id)
         return
     if event.get("type") != "im.message.receive_v1":
         return
@@ -831,7 +837,7 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
     if not isinstance(message_id, str) or not message_id.startswith("om_") or message_id in done:
         return
     if message_id in outbox:
-        flush_outbox(outbox, done, threads)
+        flush_outbox(outbox, done, threads, target_message_id=message_id)
         return
     if event.get("sender_type") != "user":
         return
@@ -863,7 +869,7 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
             "sent": False, "policy_refusal": True,
         }
         save_outbox(outbox)
-        flush_outbox(outbox, done, threads)
+        flush_outbox(outbox, done, threads, target_message_id=message_id)
         return
     key = thread_key({"chat_type": event["chat_type"], "chat_id": chat_id,
                       "root_id": event.get("root_id"), "thread_id": event.get("thread_id"),
@@ -882,7 +888,7 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
                 "sent": False, "control_ack": True,
             }
             save_outbox(outbox)
-            flush_outbox(outbox, done, threads)
+            flush_outbox(outbox, done, threads, target_message_id=message_id)
             return
     if not question:
         return
@@ -901,7 +907,7 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
         "sent": False,
     }
     save_outbox(outbox)
-    flush_outbox(outbox, done, threads)
+    flush_outbox(outbox, done, threads, target_message_id=message_id)
 
 
 def consume_comment_events(incoming: queue.Queue[dict]) -> None:
@@ -970,6 +976,7 @@ def main() -> None:
     manual_seen, manual_initialized = load_manual_seen()
     manual_checked_updates: dict[str, int] = {}
     next_manual_scan = 0.0
+    next_outbox_retry = 0.0
     comment_events: queue.Queue[dict] = queue.Queue(maxsize=100)
     if COMMENT_EVENTS_ENABLED:
         threading.Thread(target=consume_comment_events, args=(comment_events,), daemon=True).start()
@@ -987,12 +994,6 @@ def main() -> None:
                 return
 
     while running:
-        try:
-            flush_outbox(outbox, done, threads)
-        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
-            log(f"answer delivery pending: {exc}")
-            time.sleep(15)
-            continue
         listener = subprocess.Popen(
             [
                 EVENT_CLI, "--profile", PROFILE, "event", "consume",
@@ -1032,12 +1033,12 @@ def main() -> None:
                     drain_comment_events()
                     if listener.poll() is not None:
                         break
-                    if outbox:
+                    if outbox and time.monotonic() >= next_outbox_retry:
                         try:
                             flush_outbox(outbox, done, threads)
                         except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
                             log(f"answer delivery pending: {exc}")
-                            time.sleep(15)
+                            next_outbox_retry = time.monotonic() + 15
                     if time.monotonic() >= next_manual_scan:
                         try:
                             scan_manual_replies(outbox, done, manual_seen,
@@ -1060,9 +1061,7 @@ def main() -> None:
                     drain_comment_events()
                 except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
                     log(f"event handling failed: {exc}")
-                    if outbox:
-                        listener.terminate()
-                        break
+                    next_outbox_retry = time.monotonic() + 15
         finally:
             selector.close()
         if listener.poll() is None:

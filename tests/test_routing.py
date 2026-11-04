@@ -66,6 +66,37 @@ class RoutingTests(unittest.TestCase):
         self.assertLessEqual(len(key), 50)
         self.assertEqual(key, bridge.idempotency_key("om_example", "reply"))
 
+    def test_reused_thread_is_loaded_into_desktop_before_recovery(self):
+        message_id = "om_recover"
+        record = {"chat_type": "p2p", "chat_id": "oc_person", "sender_id": "ou_person",
+                  "message_id": message_id, "question": "进度如何？", "create_time": "1793707895348",
+                  "codex_thread_id": "thread-1", "project_bound": True}
+        turns = [{"id": "turn-1", "items": [{"type": "userMessage", "content": [
+            {"type": "text", "text": f"飞书消息 ID：{message_id}\n\n进度如何？"}]}]}]
+        with patch.object(bridge, "open_in_desktop") as open_desktop, \
+             patch.object(bridge, "read_history", return_value=turns), \
+             patch.object(bridge, "wait_for_completed", return_value="请提供项目名称。"), \
+             patch.object(bridge, "assert_turn_security"), \
+             patch.object(bridge, "save_outbox"):
+            answer = bridge.ask_codex(message_id, record, {}, {message_id: record})
+        open_desktop.assert_called_once_with("thread-1")
+        self.assertEqual(answer, "请提供项目名称。")
+
+    def test_new_event_does_not_retry_an_unrelated_stale_record_first(self):
+        stale = {"answer": None, "codex_thread_id": "stale-thread"}
+        current = {"answer": "请补充页面截图。", "question": "如何排查？",
+                   "chat_id": "oc_person", "chat_type": "p2p", "sender_id": "ou_person",
+                   "message_id": "om_current", "codex_thread_id": "current-thread", "sent": False}
+        outbox = {"om_stale": stale, "om_current": current}
+        done = set()
+        with patch.object(bridge, "ask_codex", side_effect=AssertionError("stale retried")), \
+             patch.object(bridge, "review_answer", return_value=current["answer"]), \
+             patch.object(bridge, "send_text"), patch.object(bridge, "save_outbox"), \
+             patch.object(bridge, "save_done"):
+            bridge.flush_outbox(outbox, done, {}, target_message_id="om_current")
+        self.assertEqual(done, {"om_current"})
+        self.assertIn("om_stale", outbox)
+
 
 if __name__ == "__main__":
     unittest.main()
