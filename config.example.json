@@ -5,6 +5,7 @@
   "model": "gpt-6.1-sol",
   "reasoning_effort": "high",
   "permission_profile": "",
+  "profile_allowed_write_paths": [],
   "product_read_path": "",
   "additional_product_read_paths": [],
   "codex_history_read": false,

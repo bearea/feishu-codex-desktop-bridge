@@ -1,4 +1,8 @@
 import unittest
+import json
+import tempfile
+from contextlib import nullcontext
+from pathlib import Path
 from unittest.mock import patch
 
 import bridge
@@ -18,6 +22,34 @@ def pending_record():
 
 
 class ExportPolicyTests(unittest.TestCase):
+    def test_bot_profile_allows_only_declared_cache_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rollout = Path(directory) / "turn.jsonl"
+            source = Path(directory).resolve() / "product"
+            cache = Path(directory).resolve() / "uv-cache"
+            entries = [
+                {"access": "read", "path": {"type": "path", "path": str(source / "README.md")}},
+                {"access": "write", "path": {"type": "path", "path": str(cache)}},
+            ]
+            def check():
+                payload = {"turn_id": "turn-1", "approval_policy": "never",
+                           "active_permission_profile": {"id": "daily"},
+                           "permission_profile": {"type": "managed",
+                               "file_system": {"entries": entries}}}
+                rollout.write_text(json.dumps({"type": "turn_context", "payload": payload}) + "\n")
+                bridge.assert_turn_security("thread-1", "turn-1")
+            with patch.object(bridge, "app_server", return_value=nullcontext(None)), \
+                 patch.object(bridge, "send_rpc"), \
+                 patch.object(bridge, "rpc_result", return_value={"thread": {"path": str(rollout)}}), \
+                 patch.object(bridge, "PERMISSION_PROFILE", "daily"), \
+                 patch.object(bridge, "PROFILE_ALLOWED_WRITE_PATHS", [str(cache)]), \
+                 patch.object(bridge, "PRODUCT_READ_PATH", str(source)), \
+                 patch.object(bridge, "ADDITIONAL_PRODUCT_READ_PATHS", []):
+                check()
+                entries.append({"access": "write", "path": {"type": "path", "path": str(source)}})
+                with self.assertRaisesRegex(RuntimeError, "unexpected write access"):
+                    check()
+
     def test_general_answer_auto_sensitive_project_answer_review(self):
         answer = "该状态先检查前端展示规则。"
         self.assertEqual(export_decision(answer, question="产品状态显示不一致怎么排查？"), "auto")

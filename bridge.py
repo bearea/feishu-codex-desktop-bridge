@@ -68,6 +68,11 @@ OWNER_DISPLAY_NAME = setting("owner_display_name")
 MODEL = setting("model", "gpt-6.1-sol")
 REASONING_EFFORT = setting("reasoning_effort", "high")
 PERMISSION_PROFILE = setting("permission_profile")
+PROFILE_ALLOWED_WRITE_PATHS = CONFIG.get("profile_allowed_write_paths") or []
+if not isinstance(PROFILE_ALLOWED_WRITE_PATHS, list) or any(
+        not isinstance(path, str) or not Path(path).is_absolute()
+        for path in PROFILE_ALLOWED_WRITE_PATHS):
+    raise ValueError("profile_allowed_write_paths must be a list of absolute paths")
 PRODUCT_READ_PATH = setting("product_read_path")
 ADDITIONAL_PRODUCT_READ_PATHS = CONFIG.get("additional_product_read_paths") or []
 if not isinstance(ADDITIONAL_PRODUCT_READ_PATHS, list) or any(
@@ -345,13 +350,18 @@ def assert_turn_security(thread_id: str, turn_id: str) -> None:
                 break
     if not found or found.get("approval_policy") != "never":
         raise RuntimeError("Codex turn did not apply the required approval policy")
+    if found.get("active_permission_profile", {}).get("id") != PERMISSION_PROFILE:
+        raise RuntimeError("Codex Desktop selected an unexpected permission profile")
     profile = found.get("permission_profile") or {}
     if PERMISSION_PROFILE:
         if profile.get("type") != "managed":
             raise RuntimeError("Codex Desktop did not apply the restricted profile")
         entries = profile.get("file_system", {}).get("entries", [])
-        if any(entry.get("access") == "write" for entry in entries):
-            raise RuntimeError("Codex Desktop granted write access to the bot turn")
+        allowed_writes = {str(Path(path).resolve()) for path in PROFILE_ALLOWED_WRITE_PATHS}
+        actual_writes = {str(Path(entry.get("path", {}).get("path") or "").resolve())
+            for entry in entries if entry.get("access") == "write"}
+        if actual_writes != allowed_writes:
+            raise RuntimeError("Codex Desktop granted unexpected write access to the bot turn")
         source = str(Path(PRODUCT_READ_PATH).resolve()) if PRODUCT_READ_PATH else ""
         readable_paths = {entry.get("path", {}).get("path") for entry in entries
             if entry.get("access") == "read" and entry.get("path", {}).get("type") == "path"}
@@ -538,6 +548,7 @@ def ask_codex(message_id: str, record: dict, threads: dict[str, str], outbox: di
                     f"其他 Codex 会话：{'可用只读 list_threads/read_thread 查询产品讨论，但不得为私人问题检索或引用私人内容' if CODEX_HISTORY_READ else '禁止读取'}。"
                     "其他工具和连接器仅用于只读调查；附件可按需调用上述取件工具。"
                     "已授权范围内的只读查询直接在当前权限下执行；不要请求沙箱提权或重复询问机主。"
+                    "已安装的 Python 查询 skill 若用 uv run 启动时试图写缓存，可直接用该项目的 .venv/bin/python 调用同一个只读查询脚本；"
                     "若当前权限确实不足，说明受限原因，不尝试提权或绕过。"
                     "不要在答复中逐字复制文件或会话原文，也不要输出密钥、凭证、个人信息、内部地址。"
                     "不要输出源码片段、函数实现或具体源码路径。"
