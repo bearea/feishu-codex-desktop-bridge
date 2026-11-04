@@ -65,6 +65,9 @@ class ExportPolicyTests(unittest.TestCase):
         self.assertTrue(unsupported_tool_used(history, allow_history=False))
         self.assertTrue(unsupported_tool_used([{"type": "mcpToolCall", "server": "codex_app",
                                                 "tool": "send_message_to_thread"}], allow_history=True))
+        self.assertFalse(unsupported_tool_used([{"type": "mcpToolCall", "server": "nova_db",
+                                                 "tool": "query", "arguments": {"env": "DEV"}}],
+                                               allow_history=True))
 
     def test_personal_request_never_reaches_codex(self):
         question = "请总结我的私人项目里的家庭记录"
@@ -89,7 +92,8 @@ class ExportPolicyTests(unittest.TestCase):
                       "修改代码", "启动一下服务", "把这个改掉",
                       "帮我部署一下", "请改下 README.md",
                       "帮我在 nova-be 里面改一个字段", "能不能运行测试",
-                      "可不可以修改代码", "帮我新增一个功能")
+                      "可不可以修改代码", "帮我新增一个功能",
+                      "UPDATE imp_nova.t SET x = 1", "请执行 DELETE FROM imp_nova.t")
         for question in operations:
             with self.subTest(question=question):
                 self.assertTrue(is_prohibited_operation_request(question))
@@ -110,7 +114,8 @@ class ExportPolicyTests(unittest.TestCase):
 
         for question in ("服务为什么运行失败？", "如果改成 PC，需要跑什么测试？",
                          "请分析修改代码的可行性", "帮我说说如何修改配置",
-                         "运行测试会有什么风险？", "我想知道如何运行测试"):
+                         "运行测试会有什么风险？", "我想知道如何运行测试",
+                         "帮我查询 Nova SIT 数据，SELECT * FROM imp_nova.t LIMIT 2"):
             self.assertFalse(is_prohibited_operation_request(question))
 
     def test_long_source_excerpt_is_blocked(self):

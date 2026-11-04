@@ -20,6 +20,8 @@ PERSONAL_QUESTION_PATTERNS = (
 )
 
 OPERATION_REQUEST_PATTERNS = (
+    re.compile(r"(?:^|[\s，。；;])(?:UPDATE|DELETE|INSERT|ALTER|DROP|TRUNCATE|CREATE|MERGE|GRANT|REVOKE)\s+(?:\w|`)", re.I),
+    re.compile(r"(?:执行|运行|跑|提交|帮我做|请做).{0,20}(?:UPDATE|DELETE|INSERT|ALTER|DROP|TRUNCATE|CREATE|MERGE|GRANT|REVOKE)\b", re.I),
     re.compile(r"(?:请(?:你)?|帮我|麻烦|替我|给我|你来|你去|直接|现在就|顺便|然后|再|能不能|可不可以|是否可以)(?:在|对|把|将)?[\u4e00-\u9fffA-Za-z0-9_. /-]{0,25}(?:跑(?:一下)?|运行|执行|启动|重启|停止|部署|发布|安装|升级|修改|改动|改写|改(?:一下|下)?|修复|编辑|删除|创建|提交|推送|新增|添加|写)[\u4e00-\u9fffA-Za-z0-9_. /-]{0,40}(?:服务|脚本|代码|测试|单测|用例|回归|构建|命令|文件|配置|仓库|项目|依赖|容器|程序|bug|问题|字段|功能|\.sh|\.py|\.md)"),
     re.compile(r"^(?:请(?:你)?|帮我|麻烦(?:你)?|替我|给我|你来|你去|直接|现在就|能不能|可不可以|是否可以)?\s*(?:跑|运行|执行|启动|重启|停止|部署|发布|安装|升级|修改|改动|改写|改|修复|编辑|删除|创建|提交|推送|测试|构建|编译|新增|添加|写)(?:一下|下|个|掉|起来)?(?:\s|[，。！？?！]|$|.{0,20}(?:服务|脚本|代码|测试|单测|用例|回归|构建|命令|文件|配置|仓库|项目|依赖|容器|程序|bug|字段|功能|\.sh|\.py|\.md))"),
     re.compile(r"^(?:请(?:你)?|帮我|麻烦(?:你)?|替我|给我|直接|现在就).{0,20}(?:部署|发布|重启|启动|停止|构建|编译|提交|推送)(?:一下|下|好|起来)?\s*$"),
@@ -87,10 +89,13 @@ def normalize_answer(answer: str) -> str:
 
 def unsupported_tool_used(items: list[dict], *, allow_history: bool,
                           attachment_handles: set[str] | None = None) -> bool:
-    """Allow only configured history reads and scoped attachment retrieval."""
+    """Reject file changes and unscoped attachment/history calls; other skills follow AGENTS.md."""
     for item in items:
         kind = item.get("type")
         if kind == "mcpToolCall":
+            if (item.get("server") == "codex_app"
+                    and item.get("tool") == "send_message_to_thread"):
+                return True
             history_ok = (allow_history and item.get("server") == "codex_app"
                           and item.get("tool") in ("list_threads", "read_thread"))
             arguments = item.get("arguments") or {}
@@ -98,9 +103,13 @@ def unsupported_tool_used(items: list[dict], *, allow_history: bool,
                              and item.get("tool") == "fetch_feishu_attachment"
                              and isinstance(arguments, dict)
                              and arguments.get("handle") in (attachment_handles or set()))
-            if not (history_ok or attachment_ok):
+            scoped_tool = (item.get("server") == "futou_attachment"
+                           and item.get("tool") == "fetch_feishu_attachment")
+            history_tool = (item.get("server") == "codex_app"
+                            and item.get("tool") in ("list_threads", "read_thread"))
+            if (scoped_tool and not attachment_ok) or (history_tool and not history_ok):
                 return True
-        elif kind in ("webSearch", "fileChange", "dynamicToolCall"):
+        elif kind in ("fileChange", "dynamicToolCall"):
             return True
     return False
 
