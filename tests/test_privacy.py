@@ -2,8 +2,9 @@ import unittest
 from unittest.mock import patch
 
 import bridge
-from privacy import (OUT_OF_SCOPE, PERSONAL_REFUSAL, export_decision,
-                     has_long_verbatim_overlap, is_personal_question,
+from privacy import (OPERATION_REFUSAL, OUT_OF_SCOPE, PERSONAL_REFUSAL,
+                     export_decision, has_long_verbatim_overlap, is_personal_question,
+                     is_prohibited_operation_request,
                      normalize_answer, unsupported_tool_used)
 
 
@@ -78,6 +79,39 @@ class ExportPolicyTests(unittest.TestCase):
         flush.assert_called_once()
         self.assertEqual(outbox[MESSAGE_ID]["answer"], PERSONAL_REFUSAL)
         self.assertNotIn(question, str(outbox[MESSAGE_ID]))
+
+    def test_operation_requests_are_refused_before_codex(self):
+        operations = ("帮我运行一下 nova-be 服务", "请在本地跑一遍测试",
+                      "帮我执行 scripts/test.sh 脚本", "把这个代码修改一下",
+                      "帮我重启服务", "请部署项目", "请运行 python3 -m unittest",
+                      "帮我改一下这个配置", "请帮我修复 bug",
+                      "跑一下单测", "运行测试", "执行脚本", "重启服务",
+                      "修改代码", "启动一下服务", "把这个改掉",
+                      "帮我部署一下", "请改下 README.md",
+                      "帮我在 nova-be 里面改一个字段", "能不能运行测试",
+                      "可不可以修改代码", "帮我新增一个功能")
+        for question in operations:
+            with self.subTest(question=question):
+                self.assertTrue(is_prohibited_operation_request(question))
+                event = {"type": "im.message.receive_v1", "message_id": MESSAGE_ID,
+                         "sender_type": "user", "chat_type": "p2p", "message_type": "text",
+                         "chat_id": "oc_test", "sender_id": "ou_test", "content": question}
+                outbox = {}
+                with patch.object(bridge, "save_outbox"), patch.object(bridge, "flush_outbox") as flush, \
+                     patch.object(bridge, "ask_codex") as ask:
+                    bridge.handle(event, set(), outbox, {})
+                ask.assert_not_called()
+                flush.assert_called_once()
+                self.assertEqual(outbox[MESSAGE_ID]["answer"], OPERATION_REFUSAL)
+                self.assertNotIn(question, str(outbox[MESSAGE_ID]))
+                self.assertEqual(bridge.review_answer(MESSAGE_ID, outbox[MESSAGE_ID], outbox),
+                                 OPERATION_REFUSAL)
+                self.assertEqual(export_decision("好的", question=question), "block")
+
+        for question in ("服务为什么运行失败？", "如果改成 PC，需要跑什么测试？",
+                         "请分析修改代码的可行性", "帮我说说如何修改配置",
+                         "运行测试会有什么风险？", "我想知道如何运行测试"):
+            self.assertFalse(is_prohibited_operation_request(question))
 
     def test_long_source_excerpt_is_blocked(self):
         excerpt = "这个产品的完整原始描述包含内部流程和实现细节，需要在本机处理后才能形成可公开的概括结论。"

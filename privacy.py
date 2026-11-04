@@ -8,6 +8,7 @@ import re
 
 OUT_OF_SCOPE = "福头目前只回答产品功能、使用、需求和故障相关的问题。请换一个产品问题再问我。"
 PERSONAL_REFUSAL = "福头不能查询或回答个人信息、私人项目及私人会话的内容。请改问已授权产品项目的问题。"
+OPERATION_REFUSAL = "福头只提供产品问题的只读分析，不能替你运行服务、代码、脚本或测试，也不能修改项目。请改问现状、原因或实施建议。"
 
 # Reject these requests before they reach a Codex chat or any local tool.
 PERSONAL_QUESTION_PATTERNS = (
@@ -16,6 +17,16 @@ PERSONAL_QUESTION_PATTERNS = (
     re.compile(r"(?:我的|你的|他的|她的|家人|同事|员工|客户).{0,12}(?:生日|住址|家庭|婚姻|收入|工资|薪资|资产|病历|病史|健康|身份证|手机号|银行卡|私人邮箱)"),
     re.compile(r"[\u4e00-\u9fff]{2,4}的(?:生日|住址|家庭|婚姻|收入|工资|薪资|资产|病历|病史|健康|身份证|手机号|银行卡|私人邮箱)"),
     re.compile(r"(?:查|找|列出|显示|透露|告诉|读取|导出|总结|搜索|提供).{0,30}(?:个人信息|隐私信息|身份证号|手机号|银行卡号|家庭住址|病历|私人邮箱)"),
+)
+
+OPERATION_REQUEST_PATTERNS = (
+    re.compile(r"(?:请(?:你)?|帮我|麻烦|替我|给我|你来|你去|直接|现在就|顺便|然后|再|能不能|可不可以|是否可以)(?:在|对|把|将)?[\u4e00-\u9fffA-Za-z0-9_. /-]{0,25}(?:跑(?:一下)?|运行|执行|启动|重启|停止|部署|发布|安装|升级|修改|改动|改写|改(?:一下|下)?|修复|编辑|删除|创建|提交|推送|新增|添加|写)[\u4e00-\u9fffA-Za-z0-9_. /-]{0,40}(?:服务|脚本|代码|测试|单测|用例|回归|构建|命令|文件|配置|仓库|项目|依赖|容器|程序|bug|问题|字段|功能|\.sh|\.py|\.md)"),
+    re.compile(r"^(?:请(?:你)?|帮我|麻烦(?:你)?|替我|给我|你来|你去|直接|现在就|能不能|可不可以|是否可以)?\s*(?:跑|运行|执行|启动|重启|停止|部署|发布|安装|升级|修改|改动|改写|改|修复|编辑|删除|创建|提交|推送|测试|构建|编译|新增|添加|写)(?:一下|下|个|掉|起来)?(?:\s|[，。！？?！]|$|.{0,20}(?:服务|脚本|代码|测试|单测|用例|回归|构建|命令|文件|配置|仓库|项目|依赖|容器|程序|bug|字段|功能|\.sh|\.py|\.md))"),
+    re.compile(r"^(?:请(?:你)?|帮我|麻烦(?:你)?|替我|给我|直接|现在就).{0,20}(?:部署|发布|重启|启动|停止|构建|编译|提交|推送)(?:一下|下|好|起来)?\s*$"),
+    re.compile(r"^(?:请(?:你)?|帮我|麻烦(?:你)?)?\s*(?:把|将)这个(?:改掉|改了|删掉|删除|修改)\s*$"),
+    re.compile(r"(?:把|将)[\u4e00-\u9fffA-Za-z0-9_. /-]{0,20}(?:服务|脚本|代码|测试|命令|文件|配置|仓库|项目|依赖|容器|程序)[\u4e00-\u9fffA-Za-z0-9_. /-]{0,10}(?:跑|运行|执行|启动|重启|停止|部署|发布|安装|升级|修改|改动|改写|改|修复|编辑|删除|创建|提交|推送)"),
+    re.compile(r"(?:run|execute|start|restart|stop|deploy|publish|install|modify|edit|delete|commit|push)\s+(?:the\s+)?(?:service|script|code|test|command|file|config|project|repository)", re.I),
+    re.compile(r"(?:请|帮我|麻烦|直接|现在就).{0,12}(?:运行|执行|跑).{0,8}(?:python\d*|pytest|node|npm|pnpm|yarn|bash|sh\b|go\s+test|make\b|mvn|gradle|uv\s+run|poe\b)", re.I),
 )
 
 SENSITIVE_PROJECT_PATTERNS = (
@@ -51,6 +62,21 @@ SECRET_PATTERNS = (
 
 def is_personal_question(question: str) -> bool:
     return any(pattern.search(question) for pattern in PERSONAL_QUESTION_PATTERNS)
+
+
+def is_prohibited_operation_request(question: str) -> bool:
+    conceptual_operation = re.search(
+        r"^(?:运行|执行|启动|重启|部署|发布|修改|改动|修复|测试).{0,15}(?:会有什么|会不会|有什么风险|为什么|如何|怎么|需要什么|有什么影响)",
+        question)
+    analysis_only = re.search(
+        r"^(?:请(?:你)?|帮我|麻烦)?(?:分析|评估|说明|解释|介绍|梳理|讨论|讲讲|说说|判断|看看|看下).{0,24}(?:如何|怎么|可行性|难度|方案|风险|思路|需要|能否)",
+        question)
+    followup_action = re.search(
+        r"(?:并|然后|顺便|接着|再).{0,12}(?:跑|运行|执行|启动|重启|停止|部署|发布|安装|升级|修改|改写|改一下|修复|编辑|删除|创建|提交|推送)",
+        question)
+    if (analysis_only or conceptual_operation) and not followup_action:
+        return False
+    return any(pattern.search(question) for pattern in OPERATION_REQUEST_PATTERNS)
 
 
 def normalize_answer(answer: str) -> str:
@@ -122,7 +148,7 @@ def export_decision(answer: str, *, question: str = "", unsupported_tool: bool =
     """Return block, review, or auto based on content and tool provenance."""
     if not answer or len(answer) > 9000:
         return "block"
-    if is_personal_question(question) or unsupported_tool:
+    if is_personal_question(question) or is_prohibited_operation_request(question) or unsupported_tool:
         return "block"
     if any(pattern.search(answer) for pattern in SECRET_PATTERNS):
         return "block"

@@ -97,6 +97,27 @@ class CommentChannelTests(unittest.TestCase):
         self.assertEqual(bridge.thread_key(record),
                          f"doc:docx:{EVENT['file_token']}:{EVENT['comment_id']}")
 
+    def test_operation_requested_in_comment_does_not_reach_codex(self):
+        message_id = comment_notice_id(EVENT)
+        assert message_id
+        record = {"source_type": "doc_comment", "chat_type": "doc_comment",
+                  "chat_id": f"doc:docx:{EVENT['file_token']}:{EVENT['comment_id']}",
+                  "file_token": EVENT["file_token"], "file_type": "docx",
+                  "comment_id": EVENT["comment_id"], "reply_id": EVENT["reply_id"],
+                  "sender_id": EVENT["from_open_id"], "create_time": EVENT["timestamp"],
+                  "answer": None, "question": None, "sent": False}
+        outbox = {message_id: record}
+        with patch.object(bridge, "load_comment_request",
+                          return_value=("帮我重启服务", "文档内容", False, False)), \
+             patch.object(bridge, "ask_codex") as ask, \
+             patch.object(bridge, "publish_comment_answer") as publish, \
+             patch.object(bridge, "save_outbox"), patch.object(bridge, "save_done"):
+            bridge.flush_outbox(outbox, set(), {})
+        ask.assert_not_called()
+        self.assertEqual(record["question"], "")
+        self.assertTrue(record["policy_refusal"])
+        self.assertIn("不能替你运行服务", publish.call_args.args[-1])
+
     def test_doc_answer_uses_comment_delivery_after_review(self):
         record = {"source_type": "doc_comment", "chat_type": "doc_comment",
                   "chat_id": "doc:docx:token123456:comment123456",
