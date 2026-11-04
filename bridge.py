@@ -539,6 +539,8 @@ def ask_codex(message_id: str, record: dict, threads: dict[str, str], outbox: di
                     "拒绝个人信息、私人项目和私人会话问题，不查询或推断相关内容。"
                     "只允许在命名权限配置和项目 AGENTS.md 共同授权的范围内只读查阅产品项目；"
                     "可按本机已有 skill 的说明使用只读查询工具，不按环境或工具名称设置固定拦截；"
+                    "若已安装 nova-db-direct，Nova DEV/SIT Doris 可经其 doris.py check/query 直连核验；"
+                    "不要因 OceanBase 脚本不支持 Doris 就断言无法查询或要求提问人代查。"
                     "查询前核验目标环境和工具的只读入口。不得写文件、运行服务、任意脚本或测试、"
                     "部署、重启、调用写入型 SQL 或使用发送消息的工具。"
                     "尤其不得通过 FTD 或 k8s CLI 发版、重启服务。"
