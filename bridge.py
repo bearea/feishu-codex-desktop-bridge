@@ -776,7 +776,7 @@ def manual_turn_candidates(turns: list[dict], seen: set[str]) -> list[tuple[str,
         if not isinstance(turn_id, str) or turn_id in seen:
             continue
         content = first_user_text(turn)
-        if (not content or content.startswith("飞书提问人：")
+        if (not content or content.startswith(("飞书提问人：", "# AGENTS.md instructions for "))
                 or content.startswith(("本机飞书答复审核，编号", "本机飞书发送回执，编号"))
                 or content.startswith("<send_user_message_question_reply>")):
             seen.add(turn_id)
@@ -789,6 +789,7 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
                         *, bootstrap: bool, checked_updates: dict[str, int] | None = None) -> None:
     """Watch owner-written turns without opening or navigating Desktop windows."""
     candidates: list[tuple[str, str, str | None, str, str]] = []
+    thread_records: dict[str, list[dict]] = {}
     with app_server() as process:
         cursor = None
         request_id = 10
@@ -804,31 +805,39 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
                 if (thread.get("originator") != "feishu_codex_bridge"
                         or not isinstance(thread_id, str)):
                     continue
-                updated_at = thread.get("updatedAt")
-                if (not bootstrap and checked_updates is not None
-                        and checked_updates.get(thread_id) == updated_at):
-                    continue
-                turns = rollout_user_turns(thread.get("path") or "", thread_id)
-                chat_id = feishu_chat_from_history(turns)
-                if not chat_id:
-                    continue
-                sender_name = feishu_sender_from_history(turns)
-                turn_candidates = manual_turn_candidates(turns, seen)
-                if checked_updates is not None and not turn_candidates and not any(
-                        turn.get("status") != "completed"
-                        and first_user_text(turn)
-                        and not first_user_text(turn).startswith(("飞书提问人：", "本机飞书答复审核，编号",
-                                                                    "本机飞书发送回执，编号"))
-                        for turn in turns):
-                    checked_updates[thread_id] = updated_at
-                for turn_id, content in turn_candidates:
-                    if not bootstrap:
-                        candidates.append((thread_id, chat_id, sender_name, turn_id, content))
-                    else:
-                        seen.add(turn_id)
+                thread_records.setdefault(thread_id, []).append(thread)
             cursor = page.get("nextCursor")
             if not cursor:
                 break
+    for thread_id, records in thread_records.items():
+        updated_at = max((item.get("updatedAt") or 0 for item in records), default=0)
+        if (not bootstrap and checked_updates is not None
+                and checked_updates.get(thread_id) == updated_at):
+            continue
+        turns: list[dict] = []
+        turn_ids: set[str] = set()
+        for record in sorted(records, key=lambda item: item.get("createdAt") or 0):
+            for turn in rollout_user_turns(record.get("path") or "", thread_id):
+                if turn["id"] not in turn_ids:
+                    turns.append(turn)
+                    turn_ids.add(turn["id"])
+        chat_id = feishu_chat_from_history(turns)
+        if not chat_id:
+            continue
+        sender_name = feishu_sender_from_history(turns)
+        turn_candidates = manual_turn_candidates(turns, seen)
+        if checked_updates is not None and not turn_candidates and not any(
+                turn.get("status") != "completed"
+                and first_user_text(turn)
+                and not first_user_text(turn).startswith(("飞书提问人：", "本机飞书答复审核，编号",
+                                                            "本机飞书发送回执，编号"))
+                for turn in turns):
+            checked_updates[thread_id] = updated_at
+        for turn_id, content in turn_candidates:
+            if not bootstrap:
+                candidates.append((thread_id, chat_id, sender_name, turn_id, content))
+            else:
+                seen.add(turn_id)
     if bootstrap:
         save_private_json(MANUAL_SEEN, sorted(seen))
         log("manual Feishu reply watcher initialized without replaying old chats")

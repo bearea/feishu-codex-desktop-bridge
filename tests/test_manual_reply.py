@@ -41,6 +41,13 @@ class ManualReplyTests(unittest.TestCase):
             self.assertEqual(classify_owner_message(message, model="gpt-6.1-sol"), body)
             run.assert_not_called()
 
+    def test_quoted_verbatim_reply_is_extracted_without_model_rewriting(self):
+        message = "好的，原文发送给冯金福，“可以的，现在测试一下补发消息”"
+        with patch("manual_reply.subprocess.run") as run:
+            self.assertEqual(classify_owner_message(message, model="gpt-6.1-sol"),
+                             "可以的，现在测试一下补发消息")
+            run.assert_not_called()
+
     def test_rollout_reader_handles_long_completed_turn_without_app_server_history(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -68,6 +75,7 @@ class ManualReplyTests(unittest.TestCase):
     def test_only_owner_turn_is_candidate(self):
         turns = [
             user_turn("feishu", "飞书提问人：张三\n飞书会话：oc_12345678\n飞书消息 ID：om_12345678\n\n问题"),
+            user_turn("agents", "# AGENTS.md instructions for /Users/example/project\n\n<INSTRUCTIONS>"),
             user_turn("review", "本机飞书答复审核，编号 abc。请审核"),
             user_turn("receipt", "本机飞书发送回执，编号 manual:owner\n飞书接口已确认发送"),
             user_turn("pending", "帮我回复他：请稍等。", "inProgress"),
@@ -77,7 +85,7 @@ class ManualReplyTests(unittest.TestCase):
         self.assertEqual(bridge.feishu_chat_from_history(turns), "oc_12345678")
         self.assertEqual(bridge.manual_turn_candidates(turns, seen),
                          [("owner", "帮我回复他：请提供截图。")])
-        self.assertEqual(seen, {"feishu", "review", "receipt"})
+        self.assertEqual(seen, {"feishu", "agents", "review", "receipt"})
 
     def test_scan_queues_manual_reply_but_bootstrap_does_not_replay(self):
         turns = [user_turn("feishu", "飞书提问人：张三\n飞书会话：oc_12345678\n飞书消息 ID：om_12345678\n\n问题"),
@@ -127,6 +135,32 @@ class ManualReplyTests(unittest.TestCase):
         classify.assert_not_called()
         self.assertTrue(outbox["manual:owner"]["withheld"])
         self.assertIn("收件人", outbox["manual:owner"]["withheld_reason"])
+
+    def test_scan_merges_split_rollouts_before_routing_owner_reply(self):
+        old = [user_turn("feishu", "飞书提问人：冯金福（ou_123）\n飞书会话：oc_12345678\n飞书消息 ID：om_12345678\n\n问题")]
+        new = [user_turn("owner", "好的，原文发送给冯金福，“可以的，现在测试一下补发消息”")]
+        page = {"data": [
+            {"id": "thread-1", "originator": "feishu_codex_bridge", "path": "new.jsonl",
+             "createdAt": 2, "updatedAt": 3},
+            {"id": "thread-1", "originator": "feishu_codex_bridge", "path": "old.jsonl",
+             "createdAt": 1, "updatedAt": 2},
+        ]}
+
+        @contextmanager
+        def fake_app_server():
+            yield object()
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(bridge, "app_server", fake_app_server), \
+             patch.object(bridge, "send_rpc"), \
+             patch.object(bridge, "rpc_result", return_value=page), \
+             patch.object(bridge, "rollout_user_turns", side_effect=lambda path, _id: old if path == "old.jsonl" else new), \
+             patch.object(bridge, "save_outbox"), \
+             patch.object(bridge, "MANUAL_SEEN", Path(directory) / "seen.json"):
+            outbox = {}
+            bridge.scan_manual_replies(outbox, set(), set(), bootstrap=False)
+        self.assertEqual(outbox["manual:owner"]["chat_id"], "oc_12345678")
+        self.assertEqual(outbox["manual:owner"]["answer"], "可以的，现在测试一下补发消息")
 
     def test_review_notice_is_sent_once(self):
         record = {"answer": "内部接口地址需要审核。", "question": "内部接口地址是什么？",
