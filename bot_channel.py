@@ -118,6 +118,17 @@ class BotChannel:
     def snapshot(self) -> dict:
         return {"version": 1, "topics": self.topics, "messages": self.messages, "recent": self.recent}
 
+    def can_reply(self, record: dict) -> bool:
+        """Pending work must still be in the currently enabled bot scope."""
+        policy = self.policy
+        sender, chat = record.get("sender_id"), record.get("chat_id")
+        return bool(policy.enabled and policy.self_open_id
+                    and isinstance(sender, str) and _OPEN_ID.fullmatch(sender)
+                    and isinstance(chat, str) and _CHAT_ID.fullmatch(chat)
+                    and sender != policy.self_open_id
+                    and (not policy.allowed_sender_ids or sender in policy.allowed_sender_ids)
+                    and (not policy.allowed_chat_ids or chat in policy.allowed_chat_ids))
+
     def _prune(self, now: float) -> None:
         cutoff = now - self.policy.topic_ttl
         self.topics = {key: value for key, value in self.topics.items()

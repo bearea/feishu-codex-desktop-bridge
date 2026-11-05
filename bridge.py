@@ -885,6 +885,8 @@ def send_text(message_id: str, purpose: str, target_type: str, target: str, text
 
 def send_bot_reply(record: dict, text: str) -> str:
     """Review plain answer first, then add the verified recipient and reply context."""
+    if not BOT_CHANNEL.can_reply(record):
+        raise RuntimeError("bot reply is outside the currently enabled scope")
     anchor = record.get("bot_reply_to") or record["message_id"]
     if not isinstance(anchor, str) or not re.fullmatch(r"om_[A-Za-z0-9_-]+", anchor):
         raise RuntimeError("missing verified bot reply context")
@@ -1113,11 +1115,15 @@ def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str
     for message_id, record in list(outbox.items()):
         if target_message_id is not None and message_id != target_message_id:
             continue
-        if record.get("source_type") == "bot" and not record.get("manual_reply"):
-            BOT_CHANNEL.register(record)
-            if record.get("delivery_message_id"):
-                BOT_CHANNEL.delivered(record, record["delivery_message_id"])
-            save_bot_state()
+        if record.get("source_type") == "bot":
+            if not BOT_CHANNEL.can_reply(record):
+                log(f"bot message paused outside the currently enabled scope: {message_id}")
+                continue
+            if not record.get("manual_reply"):
+                BOT_CHANNEL.register(record)
+                if record.get("delivery_message_id"):
+                    BOT_CHANNEL.delivered(record, record["delivery_message_id"])
+                save_bot_state()
         pending_thread = record.get("codex_thread_id") or threads.get(thread_key(record))
         if pending_thread in waiting_threads:
             continue

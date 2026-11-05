@@ -117,6 +117,32 @@ class BotIntegrationTests(unittest.TestCase):
         self.assertIn("om_first", outbox)
         self.assertNotIn("om_first", done)
 
+    def test_disabled_or_narrowed_bot_scope_pauses_old_pending_messages(self):
+        record = self.record()
+        record["answer"] = "先前生成的答复"
+        policies = [BotPolicy(), BotPolicy(enabled=True),
+                    BotPolicy(enabled=True, self_open_id="ou_self", allowed_chat_ids=frozenset({"oc_other"})),
+                    BotPolicy(enabled=True, self_open_id="ou_self", allowed_sender_ids=frozenset({"ou_other"}))]
+        for policy in policies:
+            with self.subTest(policy=policy), \
+                    patch.object(bridge, "BOT_CHANNEL", BotChannel(policy)), \
+                    patch.object(bridge, "review_answer") as review, \
+                    patch.object(bridge, "send_bot_reply") as send:
+                outbox, done = {"om_first": record}, set()
+                bridge.flush_outbox(outbox, done, {})
+            self.assertIn("om_first", outbox)
+            self.assertNotIn("om_first", done)
+            review.assert_not_called()
+            send.assert_not_called()
+
+    def test_direct_bot_send_also_checks_current_scope(self):
+        record = self.record()
+        with patch.object(bridge, "BOT_CHANNEL", BotChannel(BotPolicy())), \
+                patch.object(bridge.subprocess, "run") as run:
+            with self.assertRaises(RuntimeError):
+                bridge.send_bot_reply(record, "先前生成的答复")
+        run.assert_not_called()
+
     def test_reply_command_keeps_exact_text_mentions_and_idempotency_key(self):
         record = self.record()
         result = type("Result", (), {"returncode": 0, "stdout": json.dumps({
