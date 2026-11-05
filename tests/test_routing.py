@@ -64,7 +64,8 @@ class RoutingTests(unittest.TestCase):
                          parent_field: "om_bot_answer"}
                 threads = {bridge.reply_route_key(chat_id, "om_bot_answer", sender_id): "original-thread"}
                 outbox = {}
-                with patch.object(bridge, "save_outbox"), patch.object(bridge, "flush_outbox"):
+                with patch.object(bridge, "save_private_json"), \
+                     patch.object(bridge, "save_outbox"), patch.object(bridge, "flush_outbox"):
                     bridge.handle(event, set(), outbox, threads)
                 record = outbox["om_followup"]
                 self.assertEqual(record["codex_thread_id"], "original-thread")
@@ -74,7 +75,8 @@ class RoutingTests(unittest.TestCase):
 
                 event["sender_id"] = "ou_someone_else"
                 outbox = {}
-                with patch.object(bridge, "save_outbox"), patch.object(bridge, "flush_outbox"):
+                with patch.object(bridge, "save_private_json"), \
+                     patch.object(bridge, "save_outbox"), patch.object(bridge, "flush_outbox"):
                     bridge.handle(event, set(), outbox, threads)
                 self.assertIsNone(outbox["om_followup"]["codex_thread_id"])
 
