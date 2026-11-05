@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import bridge
+from privacy import is_prohibited_operation_request
 
 
 class RoutingTests(unittest.TestCase):
@@ -43,6 +44,53 @@ class RoutingTests(unittest.TestCase):
                 "sender_id": "ou_one", "message_id": "om_reply"}
         self.assertNotEqual(bridge.thread_key(base), bridge.thread_key({**base, "sender_id": "ou_two"}))
         self.assertNotEqual(bridge.thread_key(base), bridge.thread_key({**base, "root_id": "om_other"}))
+
+    def test_group_mention_does_not_hide_a_restart_request(self):
+        event = {"mentions": [{"id": "ou_bot", "key": "@_user_1", "name": "福头 ✨ 🤖"}]}
+        question = "@福头 ✨ 🤖 能帮我重启pod吗？"
+        clean = bridge.question_for_policy(question, event)
+        self.assertEqual(clean, "能帮我重启pod吗？")
+        self.assertTrue(is_prohibited_operation_request(clean))
+        self.assertFalse(is_prohibited_operation_request("能否帮我分析重启Pod有什么风险？"))
+
+    def test_reply_to_bot_answer_reuses_the_original_group_chat(self):
+        chat_id, sender_id = "oc_group", "ou_owner"
+        for parent_field in ("parent_id", "reply_to", "root_id"):
+            with self.subTest(parent_field=parent_field):
+                event = {"type": "im.message.receive_v1", "message_id": "om_followup",
+                         "sender_type": "user", "chat_type": "group", "message_type": "text",
+                         "chat_id": chat_id, "sender_id": sender_id,
+                         "content": "@福头 ✨ 🤖 能帮我重启pod吗？",
+                         parent_field: "om_bot_answer"}
+                threads = {bridge.reply_route_key(chat_id, "om_bot_answer", sender_id): "original-thread"}
+                outbox = {}
+                with patch.object(bridge, "save_outbox"), patch.object(bridge, "flush_outbox"):
+                    bridge.handle(event, set(), outbox, threads)
+                record = outbox["om_followup"]
+                self.assertEqual(record["codex_thread_id"], "original-thread")
+                self.assertTrue(record["operation_request"])
+                self.assertTrue(record["input_review_reason"])
+                self.assertEqual(record["question"], event["content"])
+
+                event["sender_id"] = "ou_someone_else"
+                outbox = {}
+                with patch.object(bridge, "save_outbox"), patch.object(bridge, "flush_outbox"):
+                    bridge.handle(event, set(), outbox, threads)
+                self.assertIsNone(outbox["om_followup"]["codex_thread_id"])
+
+    def test_group_answer_registers_a_followup_route(self):
+        record = {"answer": "请补充目标环境。", "question": "帮我看下", "chat_id": "oc_group",
+                  "chat_type": "group", "sender_id": "ou_owner", "message_id": "om_question",
+                  "codex_thread_id": "original-thread", "sent": False}
+        outbox = {"om_question": record}
+        threads = {}
+        with patch.object(bridge, "review_answer", return_value=record["answer"]), \
+             patch.object(bridge, "send_text", return_value="om_bot_answer"), \
+             patch.object(bridge, "save_private_json"), patch.object(bridge, "save_outbox"), \
+             patch.object(bridge, "save_done"):
+            bridge.flush_outbox(outbox, set(), threads)
+        self.assertEqual(threads[bridge.reply_route_key("oc_group", "om_bot_answer", "ou_owner")],
+                         "original-thread")
 
     def test_message_id_matches_only_original_user_turn(self):
         turns = [

@@ -221,6 +221,35 @@ def thread_key(record: dict) -> str:
     return f"group:{record['chat_id']}:{topic}:{record['sender_id']}"
 
 
+def reply_route_key(chat_id: str, bot_message_id: str, sender_id: str) -> str:
+    """Keep a group reply by the original asker in its Codex conversation."""
+    return f"reply:{chat_id}:{bot_message_id}:{sender_id}"
+
+
+def question_for_policy(question: str, event: dict) -> str:
+    """Ignore only this bot's leading @ when classifying a Feishu request."""
+    text = question.strip()
+    aliases = {BOT_DISPLAY_NAME, f"{BOT_DISPLAY_NAME} 🤖"}
+    markers = {f"@{name}" for name in aliases if name}
+    own_id = BOT_CHANNEL.policy.self_open_id
+    for mention in event.get("mentions") or []:
+        if not isinstance(mention, dict):
+            continue
+        name = str(mention.get("name") or "")
+        if mention.get("id") == own_id or (BOT_DISPLAY_NAME and name.startswith(BOT_DISPLAY_NAME)):
+            markers.update({str(mention.get("key") or ""), f"@{name}"})
+    markers.discard("")
+    for _ in range(10):
+        match = next((marker for marker in sorted(markers, key=len, reverse=True)
+                      if text.startswith(marker) and
+                      (len(text) == len(marker) or text[len(marker)].isspace() or
+                       text[len(marker)] in "，,:：")), None)
+        if match is None:
+            break
+        text = text[len(match):].lstrip(" \t\r\n，,:：")
+    return text
+
+
 def new_session_request(question: str) -> tuple[bool, str]:
     text = question.strip()
     if text in ("新会话", "重新开始", "换个话题", "从头开始", "开启新会话"):
@@ -1242,6 +1271,11 @@ def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str
                 sent_id = send_text(message_id, "manual" if record.get("manual_reply") else "reply",
                                     "--chat-id", record["chat_id"], export_text)
                 record["delivery_message_id"] = sent_id
+                if (record.get("chat_type") == "group" and not record.get("manual_reply")
+                        and isinstance(sent_id, str) and record.get("codex_thread_id")):
+                    threads[reply_route_key(record["chat_id"], sent_id, record["sender_id"])] = (
+                        record["codex_thread_id"])
+                    save_private_json(THREADS, threads)
             record["sent"] = True
             save_outbox(outbox)
         if (record.get("manual_reply") or record.get("review_turn_id") or
@@ -1347,7 +1381,16 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
             return
     if not question:
         return
-    risk_reason = refusal_for_question(question)
+    policy_question = question_for_policy(question, event)
+    risk_reason = refusal_for_question(policy_question)
+    continuation_thread = None
+    if event["chat_type"] == "group" and not reset_session and key not in threads:
+        for parent_id in (event.get("parent_id"), event.get("reply_to"), event.get("root_id")):
+            if isinstance(parent_id, str) and parent_id.startswith("om_"):
+                continuation_thread = threads.get(reply_route_key(
+                    chat_id, parent_id, str(event.get("sender_id") or "unknown")))
+                if continuation_thread:
+                    break
     log(f"processing message {message_id}")
     outbox[message_id] = {
         "chat_id": chat_id,
@@ -1363,7 +1406,8 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
         "question": original_question,
         "answer": None,
         "input_review_reason": risk_reason,
-        "operation_request": bool(risk_reason and is_prohibited_operation_request(question)),
+        "operation_request": bool(risk_reason and is_prohibited_operation_request(policy_question)),
+        "codex_thread_id": continuation_thread,
         "create_time": str(event.get("create_time") or "unknown"),
         "sent": False,
     }
