@@ -37,6 +37,7 @@ class ManualReplyTests(unittest.TestCase):
         turns = [
             user_turn("feishu", "飞书提问人：张三\n飞书会话：oc_12345678\n飞书消息 ID：om_12345678\n\n问题"),
             user_turn("review", "本机飞书答复审核，编号 abc。请审核"),
+            user_turn("receipt", "本机飞书发送回执，编号 manual:owner\n飞书接口已确认发送"),
             user_turn("pending", "帮我回复他：请稍等。", "inProgress"),
             user_turn("owner", "帮我回复他：请提供截图。"),
         ]
@@ -44,7 +45,7 @@ class ManualReplyTests(unittest.TestCase):
         self.assertEqual(bridge.feishu_chat_from_history(turns), "oc_12345678")
         self.assertEqual(bridge.manual_turn_candidates(turns, seen),
                          [("owner", "帮我回复他：请提供截图。")])
-        self.assertEqual(seen, {"feishu", "review"})
+        self.assertEqual(seen, {"feishu", "review", "receipt"})
 
     def test_scan_queues_manual_reply_but_bootstrap_does_not_replay(self):
         turns = [user_turn("feishu", "飞书提问人：张三\n飞书会话：oc_12345678\n飞书消息 ID：om_12345678\n\n问题"),
@@ -94,10 +95,12 @@ class ManualReplyTests(unittest.TestCase):
         outbox = {"manual:turn-1": record}
         done = set()
         with patch.object(bridge, "send_text") as send, \
+             patch.object(bridge, "post_manual_delivery_receipt", return_value="receipt-turn") as receipt, \
              patch.object(bridge, "save_outbox"), patch.object(bridge, "save_done"):
             bridge.flush_outbox(outbox, done, {})
         self.assertEqual(send.call_args.args[1:4], ("manual", "--chat-id", "oc_12345678"))
         self.assertEqual(send.call_args.args[-1], "请先提供截图。")
+        receipt.assert_called_once()
         self.assertIn("manual:turn-1", done)
 
     def test_manual_raw_code_is_withheld_without_notifying_feishu(self):
@@ -108,16 +111,73 @@ class ManualReplyTests(unittest.TestCase):
                   "unsupported_tool": False, "sent": False}
         outbox = {"manual:turn-2": record}
         with patch.object(bridge, "send_text") as send, \
-             patch.object(bridge, "save_outbox"):
+             patch.object(bridge, "post_manual_delivery_receipt", return_value="receipt-turn") as receipt, \
+             patch.object(bridge, "save_outbox"), patch.object(bridge, "save_done"):
             bridge.flush_outbox(outbox, set(), {})
         send.assert_not_called()
+        receipt.assert_called_once()
         self.assertTrue(record["withheld"])
+
+    def test_receipt_is_posted_in_original_chat_and_deduplicated(self):
+        record = {"codex_thread_id": "thread-1", "delivery_message_id": "om_sent123"}
+        class FakeDesktop:
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return None
+            def start_turn(self, thread_id, prompt, client_id, **kwargs):
+                self.call = (thread_id, prompt, client_id, kwargs)
+                return "receipt-turn"
+        desktop = FakeDesktop()
+        with patch.object(bridge, "read_history", return_value=[]), \
+             patch.object(bridge, "DesktopIpc", return_value=desktop):
+            self.assertEqual(bridge.post_manual_delivery_receipt("manual:turn-1", record),
+                             "receipt-turn")
+        self.assertEqual(desktop.call[0], "thread-1")
+        self.assertIn("飞书接口已确认发送", desktop.call[1])
+        self.assertIn("飞书消息 ID：om_sent123", desktop.call[1])
+        self.assertIn("这不代表对方已读", desktop.call[1])
+        with patch.object(bridge, "read_history", return_value=[user_turn("receipt-turn", desktop.call[1])]), \
+             patch.object(bridge, "DesktopIpc") as new_desktop:
+            self.assertEqual(bridge.post_manual_delivery_receipt("manual:turn-1", record),
+                             "receipt-turn")
+            new_desktop.assert_not_called()
+
+    def test_receipt_retry_never_resends_feishu_message(self):
+        record = {"manual_reply": True, "answer": "请先提供截图。", "sent": True,
+                  "chat_id": "oc_12345678", "codex_thread_id": "thread-1",
+                  "delivery_message_id": "om_sent123"}
+        outbox = {"manual:turn-1": record}
+        done = set()
+        with patch.object(bridge, "send_text") as send, \
+             patch.object(bridge, "post_manual_delivery_receipt", return_value="receipt-turn") as receipt, \
+             patch.object(bridge, "save_outbox"), patch.object(bridge, "save_done"):
+            bridge.flush_outbox(outbox, done, {})
+        send.assert_not_called()
+        receipt.assert_called_once()
+        self.assertEqual(done, {"manual:turn-1"})
+
+    def test_failed_send_does_not_claim_a_receipt(self):
+        record = {"manual_reply": True, "answer": "请先提供截图。", "question": "告诉他请先提供截图。",
+                  "chat_id": "oc_12345678", "chat_type": "p2p", "sender_id": "ou_owner",
+                  "message_id": "manual:turn-1", "codex_thread_id": "thread-1",
+                  "source_excerpt_detected": False, "unsupported_tool": False, "sent": False}
+        outbox = {"manual:turn-1": record}
+        with patch.object(bridge, "send_text", side_effect=RuntimeError("network unavailable")), \
+             patch.object(bridge, "post_manual_delivery_receipt") as receipt:
+            with self.assertRaisesRegex(RuntimeError, "network unavailable"):
+                bridge.flush_outbox(outbox, set(), {})
+        receipt.assert_not_called()
+        self.assertFalse(record["sent"])
 
     def test_bot_links_render_as_markdown_but_manual_reply_keeps_exact_text(self):
         link = "[对公机构日报](https://example.com/performance-analysis/corporate-branch)"
-        result = type("Result", (), {"returncode": 0, "stdout": '{"ok":true}', "stderr": ""})()
+        result = type("Result", (), {"returncode": 0,
+                                      "stdout": '{"ok":true,"data":{"message_id":"om_sent123"}}',
+                                      "stderr": ""})()
         with patch.object(bridge.subprocess, "run", return_value=result) as run:
-            bridge.send_text("om_test", "reply", "--chat-id", "oc_test", link)
+            self.assertEqual(bridge.send_text("om_test", "reply", "--chat-id", "oc_test", link),
+                             "om_sent123")
             self.assertIn("--markdown", run.call_args.args[0])
             bridge.send_text("manual:test", "manual", "--chat-id", "oc_test", link)
             self.assertIn("--text", run.call_args.args[0])

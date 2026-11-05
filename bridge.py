@@ -664,7 +664,7 @@ def idempotency_key(message_id: str, purpose: str) -> str:
     return "fcx-" + purpose + "-" + hashlib.sha256(message_id.encode()).hexdigest()[:32]
 
 
-def send_text(message_id: str, purpose: str, target_type: str, target: str, text: str) -> None:
+def send_text(message_id: str, purpose: str, target_type: str, target: str, text: str) -> str | None:
     key = idempotency_key(message_id, purpose)
     content_flag = ("--markdown" if purpose == "reply" and re.search(r"\]\(https://[^)]+\)", text)
                     else "--text")
@@ -685,6 +685,9 @@ def send_text(message_id: str, purpose: str, target_type: str, target: str, text
     payload = json.loads(result.stdout)
     if payload.get("ok") is not True:
         raise RuntimeError(f"Feishu send rejected: {payload.get('error', {}).get('type', 'unknown')}")
+    data = payload.get("data")
+    sent_id = data.get("message_id") if isinstance(data, dict) else None
+    return sent_id if isinstance(sent_id, str) and sent_id.startswith("om_") else None
 
 
 def first_user_text(turn: dict) -> str:
@@ -715,7 +718,7 @@ def manual_turn_candidates(turns: list[dict], seen: set[str]) -> list[tuple[str,
             continue
         content = first_user_text(turn)
         if (not content or content.startswith("飞书提问人：")
-                or content.startswith("本机飞书答复审核，编号")
+                or content.startswith(("本机飞书答复审核，编号", "本机飞书发送回执，编号"))
                 or content.startswith("<send_user_message_question_reply>")):
             seen.add(turn_id)
         elif turn.get("status") == "completed":
@@ -757,7 +760,8 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
                 if checked_updates is not None and not turn_candidates and not any(
                         turn.get("status") != "completed"
                         and first_user_text(turn)
-                        and not first_user_text(turn).startswith(("飞书提问人：", "本机飞书答复审核，编号"))
+                        and not first_user_text(turn).startswith(("飞书提问人：", "本机飞书答复审核，编号",
+                                                                    "本机飞书发送回执，编号"))
                         for turn in turns):
                     checked_updates[thread_id] = updated_at
                 for turn_id, content in turn_candidates:
@@ -792,6 +796,27 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
         save_private_json(MANUAL_SEEN, sorted(seen))
     if not candidates:
         save_private_json(MANUAL_SEEN, sorted(seen))
+
+
+def post_manual_delivery_receipt(message_id: str, record: dict) -> str:
+    """Record a verified send or withholding in the original Desktop conversation."""
+    thread_id = record.get("codex_thread_id")
+    if not isinstance(thread_id, str) or not thread_id:
+        raise RuntimeError("Cannot post a Feishu delivery receipt without the original Codex chat")
+    status = ("未发送：本机安全检查拦截了这条手动回复。" if record.get("withheld") else
+              "飞书接口已确认发送到原会话；这不代表对方已读。")
+    sent_id = record.get("delivery_message_id")
+    detail = f"\n飞书消息 ID：{sent_id}" if sent_id else ""
+    prompt = (f"本机飞书发送回执，编号 {message_id}\n{status}{detail}\n"
+              "这是桥接程序的状态通知，不是飞书提问。请只回复“已记录”，不要调用工具或发送消息。")
+    for turn in read_history(thread_id):
+        if first_user_text(turn).startswith(f"本机飞书发送回执，编号 {message_id}\n"):
+            return turn["id"]
+    with DesktopIpc() as desktop:
+        return desktop.start_turn(
+            thread_id, prompt, str(uuid.uuid5(uuid.NAMESPACE_URL, f"futou-receipt:{message_id}")),
+            cwd=str(SESSION_CWD), sandbox_policy={"type": "readOnly", "networkAccess": False},
+            approval_policy="never", model=MODEL, effort="low")
 
 
 def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str],
@@ -844,6 +869,12 @@ def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str
                 record["withheld"] = True
                 save_outbox(outbox)
                 log(f"owner-authored Feishu reply withheld for {message_id}")
+                record["receipt_turn_id"] = post_manual_delivery_receipt(message_id, record)
+                save_outbox(outbox)
+                done.add(message_id)
+                save_done(done)
+                del outbox[message_id]
+                save_outbox(outbox)
                 continue
             try:
                 export_text = review_answer(message_id, record, outbox)
@@ -875,9 +906,14 @@ def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str
                 else:
                     publish_comment_answer(record, PROFILE, export_text)
             else:
-                send_text(message_id, "manual" if record.get("manual_reply") else "reply",
-                          "--chat-id", record["chat_id"], export_text)
+                sent_id = send_text(message_id, "manual" if record.get("manual_reply") else "reply",
+                                    "--chat-id", record["chat_id"], export_text)
+                if record.get("manual_reply"):
+                    record["delivery_message_id"] = sent_id
             record["sent"] = True
+            save_outbox(outbox)
+        if record.get("manual_reply") and not record.get("receipt_turn_id"):
+            record["receipt_turn_id"] = post_manual_delivery_receipt(message_id, record)
             save_outbox(outbox)
         done.add(message_id)
         save_done(done)
