@@ -368,6 +368,40 @@ class ExportPolicyTests(unittest.TestCase):
         self.assertIn(MESSAGE_ID, done)
         self.assertNotIn(MESSAGE_ID, outbox)
 
+    def test_declined_request_notifies_feishu_without_running_it(self):
+        record = {"question": "请重启 Pod", "chat_id": "oc_test", "chat_type": "group",
+                  "source_type": "human", "sender_id": "ou_owner", "message_id": MESSAGE_ID,
+                  "codex_thread_id": "original-chat", "input_review_reason": OPERATION_REFUSAL,
+                  "input_review_decision": "deny", "sent": False}
+        outbox, done = {MESSAGE_ID: record}, set()
+        with patch.object(bridge, "review_request", return_value=False), \
+             patch.object(bridge, "send_text", return_value="om_denial") as send, \
+             patch.object(bridge, "ask_codex") as ask, \
+             patch.object(bridge, "post_manual_delivery_receipt", return_value="receipt-turn"), \
+             patch.object(bridge, "save_outbox"), patch.object(bridge, "save_done"):
+            bridge.flush_outbox(outbox, done, {})
+        self.assertEqual(send.call_args.args[:4],
+                         (MESSAGE_ID, "review-denied", "--chat-id", "oc_test"))
+        self.assertIn("未获批准", send.call_args.args[4])
+        ask.assert_not_called()
+        self.assertIn(MESSAGE_ID, done)
+        self.assertNotIn(MESSAGE_ID, outbox)
+
+    def test_declined_request_stays_pending_without_delivery_confirmation(self):
+        record = {"question": "请重启 Pod", "chat_id": "oc_test", "chat_type": "group",
+                  "message_id": MESSAGE_ID, "codex_thread_id": "original-chat",
+                  "input_review_reason": OPERATION_REFUSAL,
+                  "input_review_decision": "deny", "sent": False}
+        outbox, done = {MESSAGE_ID: record}, set()
+        with patch.object(bridge, "review_request", return_value=False), \
+             patch.object(bridge, "send_text", return_value=None), \
+             patch.object(bridge, "save_outbox"):
+            with self.assertRaisesRegex(RuntimeError, "did not confirm"):
+                bridge.flush_outbox(outbox, done, {})
+        self.assertFalse(record["sent"])
+        self.assertIn(MESSAGE_ID, outbox)
+        self.assertFalse(done)
+
     def test_review_prompt_is_not_treated_as_owner_feishu_reply(self):
         turns = [{"id": "input-review", "status": "completed", "items": [
             {"type": "userMessage", "content": [{"text":

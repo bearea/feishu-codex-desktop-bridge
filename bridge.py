@@ -1197,12 +1197,31 @@ def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str
                     waiting_threads.add(record["codex_thread_id"])
                 continue
             if not approved:
-                record["sent"] = True
-                record["withheld"] = True
-                record["withheld_reason"] = "未处理：机主在本会话选择了不处理。"
-                save_outbox(outbox)
-                record["receipt_turn_id"] = post_manual_delivery_receipt(message_id, record)
-                save_outbox(outbox)
+                if not record.get("sent"):
+                    notice = ("这次请求未获批准，已停止处理；没有执行任何操作。"
+                              "你可以改问产品现状、风险或实施建议。")
+                    if record.get("source_type") == "doc_comment":
+                        sender = str(record.get("sender_id") or "")
+                        if not sender.startswith("ou_"):
+                            raise RuntimeError("Cannot notify a declined document comment without a valid sender")
+                        sent_id = send_text(message_id, "review-denied", "--user-id", sender, notice)
+                    elif record.get("source_type") == "bot":
+                        sent_id = send_bot_reply(record, notice)
+                        BOT_CHANNEL.delivered(record, sent_id)
+                        save_bot_state()
+                    else:
+                        sent_id = send_text(message_id, "review-denied", "--chat-id",
+                                            record["chat_id"], notice)
+                    if not isinstance(sent_id, str) or not sent_id.startswith("om_"):
+                        raise RuntimeError("Feishu did not confirm the declined-request notice")
+                    record["delivery_message_id"] = sent_id
+                    record["sent"] = True
+                    record["withheld"] = True
+                    record["withheld_reason"] = "未处理：机主选择了不处理；拒绝通知已发送到飞书。"
+                    save_outbox(outbox)
+                if not record.get("receipt_turn_id"):
+                    record["receipt_turn_id"] = post_manual_delivery_receipt(message_id, record)
+                    save_outbox(outbox)
                 done.add(message_id)
                 save_done(done)
                 del outbox[message_id]
