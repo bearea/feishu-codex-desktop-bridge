@@ -3,12 +3,12 @@
 import json
 import tempfile
 import unittest
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from unittest.mock import patch
 
 import bridge
-from manual_reply import classify_owner_message
+from manual_reply import classify_owner_message, inline_reply
 
 
 def user_turn(turn_id, text, status="completed"):
@@ -32,6 +32,38 @@ class ManualReplyTests(unittest.TestCase):
         with patch("manual_reply.subprocess.run", side_effect=run_result(True, "请先发页面截图。")):
             self.assertIsNone(classify_owner_message("帮我回复他：请先提供截图。",
                                                      model="gpt-6.1-sol"))
+
+    def test_long_inline_reply_is_extracted_without_model_rewriting(self):
+        body = "这是一份产品配置契约说明。" * 420
+        message = body + "\n\n---\n\n把上面这段话发送给冯金福"
+        self.assertEqual(inline_reply(message), body)
+        with patch("manual_reply.subprocess.run") as run:
+            self.assertEqual(classify_owner_message(message, model="gpt-6.1-sol"), body)
+            run.assert_not_called()
+
+    def test_rollout_reader_handles_long_completed_turn_without_app_server_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / ".codex" / "sessions" / "rollout-thread-1.jsonl"
+            path.parent.mkdir(parents=True)
+            events = [
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-1"}},
+                {"type": "response_item", "payload": {"role": "user", "content": [{"text": "<environment_context>skip</environment_context>"}]}},
+                {"type": "response_item", "payload": {"role": "user", "content": [{"text": "飞书提问人：冯金福（ou_123）\n飞书会话：oc_12345678\n飞书消息 ID：om_12345678\n\n问题"}]}},
+                {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "turn-1"}},
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-2"}},
+                {"type": "response_item", "payload": {"role": "user", "content": [{"text": "正文\n---\n把上面这段话发送给冯金福"}]}},
+                {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "turn-2"}},
+            ]
+            path.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in events) + "\n")
+            with patch.object(bridge.Path, "home", return_value=root):
+                turns = bridge.rollout_user_turns(str(path), "thread-1")
+        self.assertEqual(bridge.feishu_chat_from_history(turns), "oc_12345678")
+        self.assertEqual(bridge.feishu_sender_from_history(turns), "冯金福")
+        self.assertEqual(bridge.manual_turn_candidates(turns, set())[-1][0], "turn-2")
+        self.assertEqual(bridge.explicit_named_recipient("把上面这段话发送给冯金福"), "冯金福")
+        self.assertIsNone(bridge.explicit_named_recipient("告诉对方请提供截图"))
+        self.assertIsNone(bridge.explicit_named_recipient("告诉他请发截图"))
 
     def test_only_owner_turn_is_candidate(self):
         turns = [
@@ -60,7 +92,8 @@ class ManualReplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(bridge, "app_server", fake_app_server), \
              patch.object(bridge, "send_rpc"), \
-             patch.object(bridge, "rpc_result", side_effect=[page, history, page, history]), \
+             patch.object(bridge, "rpc_result", side_effect=[page, page]), \
+             patch.object(bridge, "rollout_user_turns", return_value=turns), \
              patch.object(bridge, "classify_owner_message", return_value="请发截图。") as classify, \
              patch.object(bridge, "save_outbox"), \
              patch.object(bridge, "MANUAL_SEEN", Path(directory) / "seen.json"):
@@ -73,6 +106,27 @@ class ManualReplyTests(unittest.TestCase):
             bridge.scan_manual_replies(outbox, set(), seen, bootstrap=False)
             self.assertEqual(outbox["manual:owner"]["chat_id"], "oc_12345678")
             self.assertEqual(outbox["manual:owner"]["answer"], "请发截图。")
+
+    def test_named_recipient_mismatch_is_withheld_before_classification(self):
+        turns = [user_turn("feishu", "飞书提问人：冯金福（ou_123）\n飞书会话：oc_12345678\n飞书消息 ID：om_12345678\n\n问题"),
+                 user_turn("owner", "把上面那段内容发给荣书浛")]
+        page = {"data": [{"id": "thread-1", "originator": "feishu_codex_bridge"}]}
+        @contextmanager
+        def fake_app_server():
+            yield object()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(bridge, "app_server", fake_app_server), \
+             patch.object(bridge, "send_rpc"), \
+             patch.object(bridge, "rpc_result", return_value=page), \
+             patch.object(bridge, "rollout_user_turns", return_value=turns), \
+             patch.object(bridge, "classify_owner_message") as classify, \
+             patch.object(bridge, "save_outbox"), \
+             patch.object(bridge, "MANUAL_SEEN", Path(directory) / "seen.json"):
+            outbox = {}
+            bridge.scan_manual_replies(outbox, set(), set(), bootstrap=False)
+        classify.assert_not_called()
+        self.assertTrue(outbox["manual:owner"]["withheld"])
+        self.assertIn("收件人", outbox["manual:owner"]["withheld_reason"])
 
     def test_review_notice_is_sent_once(self):
         record = {"answer": "内部接口地址需要审核。", "question": "内部接口地址是什么？",
@@ -88,7 +142,7 @@ class ManualReplyTests(unittest.TestCase):
 
     def test_manual_send_uses_the_original_feishu_chat(self):
         record = {"manual_reply": True, "answer": "请先提供截图。",
-                  "question": "告诉他请先提供截图。", "chat_id": "oc_12345678",
+                  "question": "请执行配置发布并告诉他请先提供截图。", "chat_id": "oc_12345678",
                   "chat_type": "p2p", "sender_id": "ou_owner", "message_id": "manual:turn-1",
                   "codex_thread_id": "thread-1", "source_excerpt_detected": False,
                   "unsupported_tool": False, "sent": False}
@@ -129,7 +183,10 @@ class ManualReplyTests(unittest.TestCase):
                 self.call = (thread_id, prompt, client_id, kwargs)
                 return "receipt-turn"
         desktop = FakeDesktop()
-        with patch.object(bridge, "read_history", return_value=[]), \
+        with patch.object(bridge, "app_server", return_value=nullcontext(None)), \
+             patch.object(bridge, "send_rpc"), \
+             patch.object(bridge, "rpc_result", return_value={"thread": {"path": "rollout.jsonl"}}), \
+             patch.object(bridge, "rollout_user_turns", return_value=[]), \
              patch.object(bridge, "DesktopIpc", return_value=desktop):
             self.assertEqual(bridge.post_manual_delivery_receipt("manual:turn-1", record),
                              "receipt-turn")
@@ -137,7 +194,10 @@ class ManualReplyTests(unittest.TestCase):
         self.assertIn("飞书接口已确认发送", desktop.call[1])
         self.assertIn("飞书消息 ID：om_sent123", desktop.call[1])
         self.assertIn("这不代表对方已读", desktop.call[1])
-        with patch.object(bridge, "read_history", return_value=[user_turn("receipt-turn", desktop.call[1])]), \
+        with patch.object(bridge, "app_server", return_value=nullcontext(None)), \
+             patch.object(bridge, "send_rpc"), \
+             patch.object(bridge, "rpc_result", return_value={"thread": {"path": "rollout.jsonl"}}), \
+             patch.object(bridge, "rollout_user_turns", return_value=[user_turn("receipt-turn", desktop.call[1])]), \
              patch.object(bridge, "DesktopIpc") as new_desktop:
             self.assertEqual(bridge.post_manual_delivery_receipt("manual:turn-1", record),
                              "receipt-turn")

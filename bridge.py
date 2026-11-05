@@ -332,6 +332,42 @@ def read_history(thread_id: str) -> list[dict]:
         return rpc_result(process, 2).get("thread", {}).get("turns", [])
 
 
+def rollout_user_turns(path: str, thread_id: str) -> list[dict]:
+    """Read only user prompts and completion markers from a local Codex rollout."""
+    rollout = Path(path).resolve()
+    if (not rollout.is_relative_to((Path.home() / ".codex" / "sessions").resolve())
+            or thread_id not in rollout.name or not rollout.is_file()):
+        raise RuntimeError(f"Invalid local rollout for Feishu thread {thread_id}")
+    turns: dict[str, dict] = {}
+    active_id: str | None = None
+    with rollout.open(encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue  # The final line can be incomplete while Desktop writes it.
+            payload = entry.get("payload") or {}
+            if entry.get("type") == "event_msg" and payload.get("type") == "task_started":
+                active_id = payload.get("turn_id")
+                if isinstance(active_id, str):
+                    turns.setdefault(active_id, {"id": active_id, "status": "inProgress", "items": []})
+            elif (entry.get("type") == "response_item" and payload.get("role") == "user"
+                  and isinstance(active_id, str) and not turns[active_id]["items"]):
+                content = "\n".join(str(item.get("text") or "") for item in payload.get("content", [])
+                                    if isinstance(item, dict))
+                if content and not content.startswith(("<environment_context>",
+                                                       "<external_codex_apps_open_page>")):
+                    turns[active_id]["items"].append({"type": "userMessage", "content": [{"text": content}]})
+            elif entry.get("type") == "event_msg" and payload.get("type") in ("task_complete", "turn_aborted"):
+                turn_id = payload.get("turn_id")
+                if isinstance(turn_id, str) and turn_id in turns:
+                    turns[turn_id]["status"] = ("completed" if payload["type"] == "task_complete"
+                                                 else "interrupted")
+                if turn_id == active_id:
+                    active_id = None
+    return list(turns.values())
+
+
 def assert_turn_security(thread_id: str, turn_id: str) -> None:
     """Refuse delivery if Desktop did not apply this turn's read-only policy."""
     with app_server() as process:
@@ -437,7 +473,7 @@ def review_answer(message_id: str, record: dict, outbox: dict[str, dict]) -> str
     if record.get("policy_refusal"):
         return record["answer"]
     answer = record["answer"]
-    policy = export_decision(answer, question=record.get("question", ""),
+    policy = export_decision(answer, question="" if record.get("manual_reply") else record.get("question", ""),
                              unsupported_tool=record.get("unsupported_tool", True))
     if policy == "block":
         return "这条答复包含不适合在飞书发送的原始内容或敏感字段，已在本机拦截。请换一种不涉及原文或凭证的问法。"
@@ -710,6 +746,29 @@ def feishu_chat_from_history(turns: list[dict]) -> str | None:
     return None
 
 
+def feishu_sender_from_history(turns: list[dict]) -> str | None:
+    for turn in turns:
+        content = first_user_text(turn)
+        match = re.search(r"(?m)^飞书提问人：([^（\n]+)（ou_[^）]+）", content)
+        if match:
+            sender = match.group(1).strip()
+            if sender == OWNER_OPEN_ID and OWNER_DISPLAY_NAME:
+                return OWNER_DISPLAY_NAME
+            return sender
+    return None
+
+
+def explicit_named_recipient(message: str) -> str | None:
+    directive = message.rsplit("\n---\n", 1)[-1][-200:]
+    match = re.search(r"(?:发给|发送给|回复给|转发给)([\u4e00-\u9fff]{2,5})(?:[，,。！!\n]|$)", directive)
+    if not match:
+        match = re.search(r"告诉(?!(?:他|她|对方|用户))([\u4e00-\u9fff]{2,4})(?=[:：，,。！!\n]|说|请|$)", directive)
+    if not match:
+        match = re.search(r"给([\u4e00-\u9fff]{2,5})发(?:送)?(?:[，,。！!\n]|$)", directive)
+    name = match.group(1) if match else None
+    return name if name not in {"对方", "提问人", "用户", "大家", "飞书", "机器人"} else None
+
+
 def manual_turn_candidates(turns: list[dict], seen: set[str]) -> list[tuple[str, str]]:
     candidates = []
     for turn in turns:
@@ -729,7 +788,7 @@ def manual_turn_candidates(turns: list[dict], seen: set[str]) -> list[tuple[str,
 def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
                         *, bootstrap: bool, checked_updates: dict[str, int] | None = None) -> None:
     """Watch owner-written turns without opening or navigating Desktop windows."""
-    candidates: list[tuple[str, str, str, str]] = []
+    candidates: list[tuple[str, str, str | None, str, str]] = []
     with app_server() as process:
         cursor = None
         request_id = 10
@@ -749,13 +808,11 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
                 if (not bootstrap and checked_updates is not None
                         and checked_updates.get(thread_id) == updated_at):
                     continue
-                send_rpc(process, request_id, "thread/read",
-                         {"threadId": thread_id, "includeTurns": True})
-                turns = rpc_result(process, request_id).get("thread", {}).get("turns", [])
-                request_id += 1
+                turns = rollout_user_turns(thread.get("path") or "", thread_id)
                 chat_id = feishu_chat_from_history(turns)
                 if not chat_id:
                     continue
+                sender_name = feishu_sender_from_history(turns)
                 turn_candidates = manual_turn_candidates(turns, seen)
                 if checked_updates is not None and not turn_candidates and not any(
                         turn.get("status") != "completed"
@@ -766,7 +823,7 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
                     checked_updates[thread_id] = updated_at
                 for turn_id, content in turn_candidates:
                     if not bootstrap:
-                        candidates.append((thread_id, chat_id, turn_id, content))
+                        candidates.append((thread_id, chat_id, sender_name, turn_id, content))
                     else:
                         seen.add(turn_id)
             cursor = page.get("nextCursor")
@@ -776,17 +833,30 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
         save_private_json(MANUAL_SEEN, sorted(seen))
         log("manual Feishu reply watcher initialized without replaying old chats")
         return
-    for thread_id, chat_id, turn_id, content in candidates:
+    for thread_id, chat_id, sender_name, turn_id, content in candidates:
         key = f"manual:{turn_id}"
         if key in outbox or key in done:
             seen.add(turn_id)
+            continue
+        recipient = explicit_named_recipient(content)
+        if recipient and recipient != sender_name:
+            outbox[key] = {
+                "chat_id": chat_id, "chat_type": "p2p", "message_id": key,
+                "codex_thread_id": thread_id, "question": "", "answer": "未发送。",
+                "sent": True, "manual_reply": True, "withheld": True,
+                "withheld_reason": "未发送：指定收件人不是本会话原提问人。请在对方自己的飞书问答会话中回复。",
+            }
+            save_outbox(outbox)
+            log(f"owner-authored Feishu reply recipient mismatch for Codex turn {turn_id}")
+            seen.add(turn_id)
+            save_private_json(MANUAL_SEEN, sorted(seen))
             continue
         reply = classify_owner_message(content, model=MODEL)
         if reply:
             outbox[key] = {
                 "chat_id": chat_id, "chat_type": "p2p", "sender_id": OWNER_OPEN_ID or "local_owner",
                 "message_id": key, "root_id": None, "thread_id": None,
-                "codex_thread_id": thread_id, "question": content, "answer": reply,
+                "codex_thread_id": thread_id, "question": "", "answer": reply,
                 "source_excerpt_detected": False, "unsupported_tool": False,
                 "create_time": "manual", "sent": False, "manual_reply": True,
             }
@@ -803,13 +873,16 @@ def post_manual_delivery_receipt(message_id: str, record: dict) -> str:
     thread_id = record.get("codex_thread_id")
     if not isinstance(thread_id, str) or not thread_id:
         raise RuntimeError("Cannot post a Feishu delivery receipt without the original Codex chat")
-    status = ("未发送：本机安全检查拦截了这条手动回复。" if record.get("withheld") else
+    status = (record.get("withheld_reason") or "未发送：本机安全检查拦截了这条手动回复。" if record.get("withheld") else
               "飞书接口已确认发送到原会话；这不代表对方已读。")
     sent_id = record.get("delivery_message_id")
     detail = f"\n飞书消息 ID：{sent_id}" if sent_id else ""
     prompt = (f"本机飞书发送回执，编号 {message_id}\n{status}{detail}\n"
               "这是桥接程序的状态通知，不是飞书提问。请只回复“已记录”，不要调用工具或发送消息。")
-    for turn in read_history(thread_id):
+    with app_server() as process:
+        send_rpc(process, 2, "thread/read", {"threadId": thread_id, "includeTurns": False})
+        path = rpc_result(process, 2).get("thread", {}).get("path")
+    for turn in rollout_user_turns(path or "", thread_id):
         if first_user_text(turn).startswith(f"本机飞书发送回执，编号 {message_id}\n"):
             return turn["id"]
     with DesktopIpc() as desktop:
@@ -862,7 +935,7 @@ def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str
         pending_thread = record.get("codex_thread_id") or pending_thread
         if not record["sent"]:
             if record.get("manual_reply") and (record.get("review_decision") == "deny"
-                    or export_decision(record["answer"], question=record.get("question", ""),
+                    or export_decision(record["answer"], question="",
                                        unsupported_tool=record.get("unsupported_tool", True)) == "block"
                     or record.get("source_excerpt_detected")):
                 record["sent"] = True

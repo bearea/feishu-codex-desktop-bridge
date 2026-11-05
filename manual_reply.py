@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -34,8 +35,23 @@ reply_text 只保留对方能直接看到的回复正文，必须是机主消息
 """
 
 
+def inline_reply(message: str) -> str | None:
+    """Extract a verbatim body followed by a clear send instruction."""
+    if "\n---\n" not in message:
+        return None
+    body, directive = message.rsplit("\n---\n", 1)
+    if (not re.search(r"(?:把|将).{0,35}(?:发给|发送给|回复给|转发给)", directive)
+            or len(directive.strip()) > 200):
+        return None
+    body = body.strip()
+    return body if body and len(body) <= 9000 else None
+
+
 def classify_owner_message(message: str, *, model: str) -> str | None:
     """Return the reply to send, or None when no explicit send intent exists."""
+    direct = inline_reply(message)
+    if direct:
+        return direct
     if not message.strip() or len(message) > 9000:
         return None
     with tempfile.TemporaryDirectory(prefix="futou-intent-") as directory:
