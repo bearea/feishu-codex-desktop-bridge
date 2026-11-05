@@ -38,7 +38,7 @@ reply_text 只保留对方能直接看到的回复正文，必须是机主消息
 def inline_reply(message: str) -> str | None:
     """Extract a verbatim body followed by a clear send instruction."""
     quoted = re.fullmatch(
-        r'\s*(?:好的[，,]\s*)?原文(?:发送|发)给[\u4e00-\u9fff]{2,5}[，,:：]\s*[“"](.+?)[”"]\s*',
+        r'\s*(?:好的[，,]\s*)?(?:原文(?:发送|发)给[\u4e00-\u9fff]{2,5}|发送到群聊)[，,:：]\s*[“"](.+?)[”"]\s*',
         message, re.S,
     )
     if quoted:

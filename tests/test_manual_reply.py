@@ -46,6 +46,9 @@ class ManualReplyTests(unittest.TestCase):
         with patch("manual_reply.subprocess.run") as run:
             self.assertEqual(classify_owner_message(message, model="gpt-6.1-sol"),
                              "可以的，现在测试一下补发消息")
+            self.assertEqual(classify_owner_message(
+                "发送到群聊，“好的，我正在下载文件并分析使用方法”", model="gpt-6.1-sol"),
+                "好的，我正在下载文件并分析使用方法")
             run.assert_not_called()
 
     def test_rollout_reader_handles_long_completed_turn_without_app_server_history(self):
@@ -56,6 +59,7 @@ class ManualReplyTests(unittest.TestCase):
             events = [
                 {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-1"}},
                 {"type": "response_item", "payload": {"role": "user", "content": [{"text": "<environment_context>skip</environment_context>"}]}},
+                {"type": "response_item", "payload": {"role": "user", "content": [{"text": "# AGENTS.md instructions for /Users/example/project\n<INSTRUCTIONS>skip</INSTRUCTIONS>"}]}},
                 {"type": "response_item", "payload": {"role": "user", "content": [{"text": "飞书提问人：冯金福（ou_123）\n飞书会话：oc_12345678\n飞书消息 ID：om_12345678\n\n问题"}]}},
                 {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "turn-1"}},
                 {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "turn-2"}},
@@ -161,6 +165,34 @@ class ManualReplyTests(unittest.TestCase):
             bridge.scan_manual_replies(outbox, set(), set(), bootstrap=False)
         self.assertEqual(outbox["manual:owner"]["chat_id"], "oc_12345678")
         self.assertEqual(outbox["manual:owner"]["answer"], "可以的，现在测试一下补发消息")
+
+    def test_group_reply_uses_original_group_and_p2p_group_request_is_withheld(self):
+        turns = [user_turn("feishu", "飞书提问人：冯金福（ou_123）\n飞书会话：oc_group123\n飞书消息 ID：om_12345678\n\n问题"),
+                 user_turn("owner", "发送到群聊，“好的，我正在下载文件并分析使用方法”")]
+        page = {"data": [{"id": "thread-1", "originator": "feishu_codex_bridge"}]}
+
+        @contextmanager
+        def fake_app_server():
+            yield object()
+
+        for routes, expected_withheld in [({"group:oc_group123:om_12345678:ou_123": "thread-1"}, False),
+                                          ({}, True)]:
+            with tempfile.TemporaryDirectory() as directory, \
+                 patch.object(bridge, "app_server", fake_app_server), \
+                 patch.object(bridge, "send_rpc"), \
+                 patch.object(bridge, "rpc_result", return_value=page), \
+                 patch.object(bridge, "rollout_user_turns", return_value=turns), \
+                 patch.object(bridge, "load_threads", return_value=routes), \
+                 patch.object(bridge, "save_outbox"), \
+                 patch.object(bridge, "MANUAL_SEEN", Path(directory) / "seen.json"):
+                outbox = {}
+                bridge.scan_manual_replies(outbox, set(), set(), bootstrap=False)
+            record = outbox["manual:owner"]
+            self.assertEqual(record["chat_id"], "oc_group123")
+            self.assertEqual(bool(record.get("withheld")), expected_withheld)
+            if not expected_withheld:
+                self.assertEqual(record["chat_type"], "group")
+                self.assertEqual(record["answer"], "好的，我正在下载文件并分析使用方法")
 
     def test_review_notice_is_sent_once(self):
         record = {"answer": "内部接口地址需要审核。", "question": "内部接口地址是什么？",

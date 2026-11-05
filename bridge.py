@@ -356,7 +356,8 @@ def rollout_user_turns(path: str, thread_id: str) -> list[dict]:
                 content = "\n".join(str(item.get("text") or "") for item in payload.get("content", [])
                                     if isinstance(item, dict))
                 if content and not content.startswith(("<environment_context>",
-                                                       "<external_codex_apps_open_page>")):
+                                                       "<external_codex_apps_open_page>",
+                                                       "# AGENTS.md instructions for ")):
                     turns[active_id]["items"].append({"type": "userMessage", "content": [{"text": content}]})
             elif entry.get("type") == "event_msg" and payload.get("type") in ("task_complete", "turn_aborted"):
                 turn_id = payload.get("turn_id")
@@ -842,18 +843,27 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
         save_private_json(MANUAL_SEEN, sorted(seen))
         log("manual Feishu reply watcher initialized without replaying old chats")
         return
+    group_thread_ids = {thread_id for key, thread_id in load_threads().items()
+                        if key.startswith("group:")}
     for thread_id, chat_id, sender_name, turn_id, content in candidates:
         key = f"manual:{turn_id}"
         if key in outbox or key in done:
             seen.add(turn_id)
             continue
+        is_group = thread_id in group_thread_ids
         recipient = explicit_named_recipient(content)
-        if recipient and recipient != sender_name:
+        wrong_recipient = bool(recipient and (recipient != sender_name or is_group))
+        directive = content.rsplit("\n---\n", 1)[-1][-200:]
+        wrong_group = bool(re.search(r"(?:发|发送)到群聊", directive) and not is_group)
+        if wrong_recipient or wrong_group:
+            reason = ("未发送：这条会话不是飞书群聊，不能把消息发送到群聊。"
+                      if wrong_group else
+                      "未发送：指定收件人与本会话的飞书入口不一致。请在对方自己的飞书问答会话中回复。")
             outbox[key] = {
-                "chat_id": chat_id, "chat_type": "p2p", "message_id": key,
+                "chat_id": chat_id, "chat_type": "group" if is_group else "p2p", "message_id": key,
                 "codex_thread_id": thread_id, "question": "", "answer": "未发送。",
                 "sent": True, "manual_reply": True, "withheld": True,
-                "withheld_reason": "未发送：指定收件人不是本会话原提问人。请在对方自己的飞书问答会话中回复。",
+                "withheld_reason": reason,
             }
             save_outbox(outbox)
             log(f"owner-authored Feishu reply recipient mismatch for Codex turn {turn_id}")
@@ -863,7 +873,8 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
         reply = classify_owner_message(content, model=MODEL)
         if reply:
             outbox[key] = {
-                "chat_id": chat_id, "chat_type": "p2p", "sender_id": OWNER_OPEN_ID or "local_owner",
+                "chat_id": chat_id, "chat_type": "group" if is_group else "p2p",
+                "sender_id": OWNER_OPEN_ID or "local_owner",
                 "message_id": key, "root_id": None, "thread_id": None,
                 "codex_thread_id": thread_id, "question": "", "answer": reply,
                 "source_excerpt_detected": False, "unsupported_tool": False,
