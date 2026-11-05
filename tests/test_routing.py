@@ -78,6 +78,22 @@ class RoutingTests(unittest.TestCase):
                     bridge.handle(event, set(), outbox, threads)
                 self.assertIsNone(outbox["om_followup"]["codex_thread_id"])
 
+    def test_reply_route_repairs_an_older_wrong_group_binding(self):
+        event = {"type": "im.message.receive_v1", "message_id": "om_new_followup",
+                 "sender_type": "user", "chat_type": "group", "message_type": "text",
+                 "chat_id": "oc_group", "sender_id": "ou_owner", "root_id": "om_bot_answer",
+                 "content": "@福头 ✨ 🤖 下一步怎么排查？"}
+        key = bridge.thread_key(event)
+        threads = {key: "wrong-thread",
+                   bridge.reply_route_key("oc_group", "om_bot_answer", "ou_owner"): "original-thread"}
+        outbox = {}
+        with patch.object(bridge, "save_private_json") as save_threads, \
+             patch.object(bridge, "save_outbox"), patch.object(bridge, "flush_outbox"):
+            bridge.handle(event, set(), outbox, threads)
+        self.assertEqual(outbox["om_new_followup"]["codex_thread_id"], "original-thread")
+        self.assertEqual(threads[key], "original-thread")
+        save_threads.assert_called_once()
+
     def test_group_answer_registers_a_followup_route(self):
         record = {"answer": "请补充目标环境。", "question": "帮我看下", "chat_id": "oc_group",
                   "chat_type": "group", "sender_id": "ou_owner", "message_id": "om_question",

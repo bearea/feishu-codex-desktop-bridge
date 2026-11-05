@@ -1384,13 +1384,16 @@ def handle(event: dict, done: set[str], outbox: dict[str, dict], threads: dict[s
     policy_question = question_for_policy(question, event)
     risk_reason = refusal_for_question(policy_question)
     continuation_thread = None
-    if event["chat_type"] == "group" and not reset_session and key not in threads:
+    if event["chat_type"] == "group" and not reset_session:
         for parent_id in (event.get("parent_id"), event.get("reply_to"), event.get("root_id")):
             if isinstance(parent_id, str) and parent_id.startswith("om_"):
                 continuation_thread = threads.get(reply_route_key(
                     chat_id, parent_id, str(event.get("sender_id") or "unknown")))
                 if continuation_thread:
                     break
+        if continuation_thread and threads.get(key) != continuation_thread:
+            threads[key] = continuation_thread
+            save_private_json(THREADS, threads)
     log(f"processing message {message_id}")
     outbox[message_id] = {
         "chat_id": chat_id,
