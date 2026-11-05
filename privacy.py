@@ -230,7 +230,7 @@ def export_decision(answer: str, *, question: str = "", unsupported_tool: bool =
             r"(?m)^\s*(?:curl\s|SELECT\s|INSERT\s|UPDATE\s|def\s|class\s|import\s|from\s+\w+\s+import\s)", answer, re.I):
         return "block"
     if answer.strip() == OUT_OF_SCOPE:
-        return "auto"
+        return "review"
     if mentions_sensitive_project_detail(question) or mentions_sensitive_project_detail(answer):
         return "review"
     return "auto"

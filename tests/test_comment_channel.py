@@ -109,14 +109,17 @@ class CommentChannelTests(unittest.TestCase):
         outbox = {message_id: record}
         with patch.object(bridge, "load_comment_request",
                           return_value=("帮我重启服务", "文档内容", False, False)), \
+             patch.object(bridge, "review_request", side_effect=bridge.ReviewPending("waiting")), \
+             patch.object(bridge, "send_text") as notice, \
              patch.object(bridge, "ask_codex") as ask, \
              patch.object(bridge, "publish_comment_answer") as publish, \
              patch.object(bridge, "save_outbox"), patch.object(bridge, "save_done"):
             bridge.flush_outbox(outbox, set(), {})
         ask.assert_not_called()
-        self.assertEqual(record["question"], "")
-        self.assertTrue(record["policy_refusal"])
-        self.assertIn("不能替你运行服务", publish.call_args.args[-1])
+        publish.assert_not_called()
+        notice.assert_called_once()
+        self.assertEqual(record["question"], "帮我重启服务")
+        self.assertTrue(record["input_review_reason"])
 
     def test_personal_activity_comment_does_not_reach_codex(self):
         message_id = comment_notice_id(EVENT)
@@ -130,15 +133,18 @@ class CommentChannelTests(unittest.TestCase):
         outbox = {message_id: record}
         with patch.object(bridge, "load_comment_request",
                           return_value=("冯金福最近在干什么", "文档内容", False, False)), \
+             patch.object(bridge, "review_request", side_effect=bridge.ReviewPending("waiting")), \
+             patch.object(bridge, "send_text") as notice, \
              patch.object(bridge, "ask_codex") as ask, \
              patch.object(bridge, "publish_comment_answer") as publish, \
              patch.object(bridge, "save_outbox"), patch.object(bridge, "save_done"):
             bridge.flush_outbox(outbox, set(), {})
         ask.assert_not_called()
-        self.assertEqual(record["question"], "")
-        self.assertEqual(record["source_context"], "")
-        self.assertTrue(record["policy_refusal"])
-        self.assertIn("个人近况", publish.call_args.args[-1])
+        publish.assert_not_called()
+        notice.assert_called_once()
+        self.assertEqual(record["question"], "冯金福最近在干什么")
+        self.assertEqual(record["source_context"], "文档内容")
+        self.assertTrue(record["input_review_reason"])
 
     def test_doc_answer_uses_comment_delivery_after_review(self):
         record = {"source_type": "doc_comment", "chat_type": "doc_comment",

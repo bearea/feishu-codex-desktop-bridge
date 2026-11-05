@@ -223,20 +223,22 @@ class ManualReplyTests(unittest.TestCase):
         receipt.assert_called_once()
         self.assertIn("manual:turn-1", done)
 
-    def test_manual_raw_code_is_withheld_without_notifying_feishu(self):
+    def test_manual_raw_code_waits_for_owner_review(self):
         record = {"manual_reply": True, "answer": "```python\nprint(1)\n```",
                   "question": "把代码发给他", "chat_id": "oc_12345678",
                   "chat_type": "p2p", "sender_id": "ou_owner", "message_id": "manual:turn-2",
                   "codex_thread_id": "thread-1", "source_excerpt_detected": False,
                   "unsupported_tool": False, "sent": False}
         outbox = {"manual:turn-2": record}
-        with patch.object(bridge, "send_text") as send, \
+        with patch.object(bridge, "review_answer", side_effect=bridge.ReviewPending("waiting")), \
+             patch.object(bridge, "send_text") as send, \
              patch.object(bridge, "post_manual_delivery_receipt", return_value="receipt-turn") as receipt, \
              patch.object(bridge, "save_outbox"), patch.object(bridge, "save_done"):
             bridge.flush_outbox(outbox, set(), {})
-        send.assert_not_called()
-        receipt.assert_called_once()
-        self.assertTrue(record["withheld"])
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.args[1], "review-wait")
+        receipt.assert_not_called()
+        self.assertFalse(record.get("withheld", False))
 
     def test_receipt_is_posted_in_original_chat_and_deduplicated(self):
         record = {"codex_thread_id": "thread-1", "delivery_message_id": "om_sent123"}

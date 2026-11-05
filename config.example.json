@@ -12,6 +12,12 @@
   "codex_bundle_id": "com.openai.codex",
   "comment_events_enabled": false,
   "event_cli": "lark-cli",
+  "bot_messages_enabled": false,
+  "bot_allowed_chat_ids": [],
+  "bot_allowed_sender_ids": [],
+  "bot_max_turns_per_topic": 3,
+  "bot_max_messages_per_minute": 6,
+  "bot_topic_ttl_seconds": 1800,
   "owner_open_id": "",
   "owner_display_name": "",
   "launchd_label": "cn.local.feishu-codex-bridge"
