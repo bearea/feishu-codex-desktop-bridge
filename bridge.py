@@ -666,10 +666,12 @@ def idempotency_key(message_id: str, purpose: str) -> str:
 
 def send_text(message_id: str, purpose: str, target_type: str, target: str, text: str) -> None:
     key = idempotency_key(message_id, purpose)
+    content_flag = ("--markdown" if purpose == "reply" and re.search(r"\]\(https://[^)]+\)", text)
+                    else "--text")
     result = subprocess.run(
         [
             "lark-cli", "--profile", PROFILE, "im", "+messages-send",
-            "--as", "bot", target_type, target, "--text", text,
+            "--as", "bot", target_type, target, content_flag, text,
             "--idempotency-key", key, "--json",
         ],
         text=True,
@@ -777,11 +779,10 @@ def scan_manual_replies(outbox: dict[str, dict], done: set[str], seen: set[str],
             continue
         reply = classify_owner_message(content, model=MODEL)
         if reply:
-            answer = f"【{OWNER_DISPLAY_NAME or '机主'}回复】\n{reply}"
             outbox[key] = {
                 "chat_id": chat_id, "chat_type": "p2p", "sender_id": OWNER_OPEN_ID or "local_owner",
                 "message_id": key, "root_id": None, "thread_id": None,
-                "codex_thread_id": thread_id, "question": content, "answer": answer,
+                "codex_thread_id": thread_id, "question": content, "answer": reply,
                 "source_excerpt_detected": False, "unsupported_tool": False,
                 "create_time": "manual", "sent": False, "manual_reply": True,
             }

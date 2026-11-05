@@ -29,6 +29,9 @@ class ManualReplyTests(unittest.TestCase):
                                                     model="gpt-6.1-sol"), "请先提供截图。")
         with patch("manual_reply.subprocess.run", side_effect=run_result(False, "")):
             self.assertIsNone(classify_owner_message("我该怎么回复他？", model="gpt-6.1-sol"))
+        with patch("manual_reply.subprocess.run", side_effect=run_result(True, "请先发页面截图。")):
+            self.assertIsNone(classify_owner_message("帮我回复他：请先提供截图。",
+                                                     model="gpt-6.1-sol"))
 
     def test_only_owner_turn_is_candidate(self):
         turns = [
@@ -68,7 +71,7 @@ class ManualReplyTests(unittest.TestCase):
             seen.remove("owner")
             bridge.scan_manual_replies(outbox, set(), seen, bootstrap=False)
             self.assertEqual(outbox["manual:owner"]["chat_id"], "oc_12345678")
-            self.assertIn("请发截图。", outbox["manual:owner"]["answer"])
+            self.assertEqual(outbox["manual:owner"]["answer"], "请发截图。")
 
     def test_review_notice_is_sent_once(self):
         record = {"answer": "内部接口地址需要审核。", "question": "内部接口地址是什么？",
@@ -83,7 +86,7 @@ class ManualReplyTests(unittest.TestCase):
         self.assertEqual(send.call_args.args[1], "review-wait")
 
     def test_manual_send_uses_the_original_feishu_chat(self):
-        record = {"manual_reply": True, "answer": "【机主回复】\n请先提供截图。",
+        record = {"manual_reply": True, "answer": "请先提供截图。",
                   "question": "告诉他请先提供截图。", "chat_id": "oc_12345678",
                   "chat_type": "p2p", "sender_id": "ou_owner", "message_id": "manual:turn-1",
                   "codex_thread_id": "thread-1", "source_excerpt_detected": False,
@@ -94,10 +97,11 @@ class ManualReplyTests(unittest.TestCase):
              patch.object(bridge, "save_outbox"), patch.object(bridge, "save_done"):
             bridge.flush_outbox(outbox, done, {})
         self.assertEqual(send.call_args.args[1:4], ("manual", "--chat-id", "oc_12345678"))
+        self.assertEqual(send.call_args.args[-1], "请先提供截图。")
         self.assertIn("manual:turn-1", done)
 
     def test_manual_raw_code_is_withheld_without_notifying_feishu(self):
-        record = {"manual_reply": True, "answer": "【机主回复】\n```python\nprint(1)\n```",
+        record = {"manual_reply": True, "answer": "```python\nprint(1)\n```",
                   "question": "把代码发给他", "chat_id": "oc_12345678",
                   "chat_type": "p2p", "sender_id": "ou_owner", "message_id": "manual:turn-2",
                   "codex_thread_id": "thread-1", "source_excerpt_detected": False,
@@ -108,6 +112,16 @@ class ManualReplyTests(unittest.TestCase):
             bridge.flush_outbox(outbox, set(), {})
         send.assert_not_called()
         self.assertTrue(record["withheld"])
+
+    def test_bot_links_render_as_markdown_but_manual_reply_keeps_exact_text(self):
+        link = "[对公机构日报](https://example.com/performance-analysis/corporate-branch)"
+        result = type("Result", (), {"returncode": 0, "stdout": '{"ok":true}', "stderr": ""})()
+        with patch.object(bridge.subprocess, "run", return_value=result) as run:
+            bridge.send_text("om_test", "reply", "--chat-id", "oc_test", link)
+            self.assertIn("--markdown", run.call_args.args[0])
+            bridge.send_text("manual:test", "manual", "--chat-id", "oc_test", link)
+            self.assertIn("--text", run.call_args.args[0])
+            self.assertEqual(run.call_args.args[0][run.call_args.args[0].index("--text") + 1], link)
 
 
 if __name__ == "__main__":

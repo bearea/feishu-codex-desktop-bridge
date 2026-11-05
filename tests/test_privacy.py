@@ -8,6 +8,7 @@ from unittest.mock import patch
 import bridge
 from privacy import (OPERATION_REFUSAL, OUT_OF_SCOPE, PERSONAL_REFUSAL, SENSITIVE_REFUSAL,
                      export_decision, has_long_verbatim_overlap, is_personal_question,
+                     is_shareable_page_link,
                      is_prohibited_operation_request, is_sensitive_request,
                      normalize_answer, unsupported_tool_used)
 
@@ -197,6 +198,21 @@ class ExportPolicyTests(unittest.TestCase):
         summary = "LSIT 发布：按最新代码重新构建，Nova BE／Worker、SmartOPS BE／Worker 四个服务均已更新并确认就绪。"
         item = {"type": "mcpToolCall", "result": {"content": [{"text": source}]}}
         self.assertFalse(has_long_verbatim_overlap(summary, [item]))
+
+    def test_public_page_links_do_not_count_as_copied_source_prose(self):
+        url = "https://corporate-performance-demo-20261027.levinschow.chatgpt.site/performance-analysis/corporate-branch"
+        answer = f"对公机构日报：[{url}]({url})"
+        item = {"type": "mcpToolCall", "result": {"content": [{"text": answer}]}}
+        self.assertTrue(is_shareable_page_link(url))
+        self.assertFalse(has_long_verbatim_overlap(answer, [item]))
+        self.assertEqual(export_decision(answer, question="对公的3个业绩分析页面发我下"), "auto")
+        copied = "这段产品原文包含很多未经整理的细节和内部判断，不能直接逐字发给飞书提问人，还必须核对数据来源。"
+        self.assertTrue(has_long_verbatim_overlap(answer + copied, [
+            {"type": "mcpToolCall", "result": copied}]))
+        signed = "https://example.com/report?token=sample-secret"
+        self.assertFalse(is_shareable_page_link(signed))
+        self.assertTrue(has_long_verbatim_overlap(signed, [
+            {"type": "mcpToolCall", "result": signed}]))
 
     def test_json_field_name_is_not_mistaken_for_a_quoted_source_excerpt(self):
         source = 'class OutputModel:\n    guidance_item_id: str\n    recommend_questions: list[str]'

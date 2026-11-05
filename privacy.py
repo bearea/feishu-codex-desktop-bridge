@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import re
+from urllib.parse import urlsplit
 
 
 OUT_OF_SCOPE = "福头目前只回答产品功能、使用、需求和故障相关的问题。请换一个产品问题再问我。"
@@ -75,6 +77,29 @@ SECRET_PATTERNS = (
     re.compile(r"\b(?:sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b"),
     re.compile(r"(?i)\b(?:jdbc|mysql|postgres(?:ql)?|mongodb|redis)://[^\s]+"),
 )
+
+HTTPS_LINK_PATTERN = re.compile(r"https://[^\s<>\])）。，,]+", re.I)
+
+
+def is_shareable_page_link(url: str) -> bool:
+    """Only exempt ordinary public page URLs from source-overlap checks."""
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    if (parsed.scheme != "https" or parsed.username or parsed.password or port
+            or parsed.query or parsed.fragment or "." not in host
+            or host.endswith((".local", ".lan", ".internal", ".test", ".invalid", ".example"))
+            or any(part in {"internal", "intranet", "corp", "private"} for part in host.split("."))
+            or re.search(r"/(?:token|secret|credential|api[_-]?key|auth)(?:/|=|$)", parsed.path, re.I)):
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return False
 
 
 def is_personal_question(question: str) -> bool:
@@ -214,9 +239,12 @@ def export_decision(answer: str, *, question: str = "", unsupported_tool: bool =
 def has_long_verbatim_overlap(answer: str, tool_items: list[dict], window: int = 40) -> bool:
     """Block copied passages and shorter attributed quotes from local sources."""
     normalized_answer = " ".join(answer.split())
+    shareable_spans = [(match.start(), match.end()) for match in HTTPS_LINK_PATTERN.finditer(normalized_answer)
+                       if is_shareable_page_link(match.group())]
     quotes = [" ".join(quote.split()) for quote in
               re.findall(r'[“「"]([^”」"\n]{12,})[”」"]', answer)
-              if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", quote)]
+              if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", quote)
+              and not is_shareable_page_link(quote)]
     if len(normalized_answer) < window and not quotes:
         return False
 
@@ -245,6 +273,9 @@ def has_long_verbatim_overlap(answer: str, tool_items: list[dict], window: int =
                 if len(normalized_source) < window:
                     continue
                 for offset in range(len(normalized_answer) - window + 1):
+                    if any(start < offset + window and offset < end
+                           for start, end in shareable_spans):
+                        continue
                     if normalized_answer[offset:offset + window] in normalized_source:
                         return True
     return False
