@@ -1130,12 +1130,15 @@ def post_manual_delivery_receipt(message_id: str, record: dict) -> str:
         path = rpc_result(process, 2).get("thread", {}).get("path")
     for turn in rollout_user_turns(path or "", thread_id):
         if first_user_text(turn).startswith(f"本机飞书发送回执，编号 {message_id}\n"):
+            wait_for_completed(thread_id, turn["id"], 120)
             return turn["id"]
     with DesktopIpc() as desktop:
-        return desktop.start_turn(
+        turn_id = desktop.start_turn(
             thread_id, prompt, str(uuid.uuid5(uuid.NAMESPACE_URL, f"futou-receipt:{message_id}")),
             cwd=str(SESSION_CWD), sandbox_policy={"type": "readOnly", "networkAccess": False},
             approval_policy="never", model=MODEL, effort="low")
+    wait_for_completed(thread_id, turn_id, 120)
+    return turn_id
 
 
 def flush_outbox(outbox: dict[str, dict], done: set[str], threads: dict[str, str],

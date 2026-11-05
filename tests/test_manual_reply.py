@@ -255,9 +255,11 @@ class ManualReplyTests(unittest.TestCase):
              patch.object(bridge, "send_rpc"), \
              patch.object(bridge, "rpc_result", return_value={"thread": {"path": "rollout.jsonl"}}), \
              patch.object(bridge, "rollout_user_turns", return_value=[]), \
-             patch.object(bridge, "DesktopIpc", return_value=desktop):
+             patch.object(bridge, "DesktopIpc", return_value=desktop), \
+             patch.object(bridge, "wait_for_completed", return_value="已记录") as wait:
             self.assertEqual(bridge.post_manual_delivery_receipt("manual:turn-1", record),
                              "receipt-turn")
+            wait.assert_called_once_with("thread-1", "receipt-turn", 120)
         self.assertEqual(desktop.call[0], "thread-1")
         self.assertIn("飞书接口已确认发送", desktop.call[1])
         self.assertIn("飞书消息 ID：om_sent123", desktop.call[1])
@@ -266,10 +268,12 @@ class ManualReplyTests(unittest.TestCase):
              patch.object(bridge, "send_rpc"), \
              patch.object(bridge, "rpc_result", return_value={"thread": {"path": "rollout.jsonl"}}), \
              patch.object(bridge, "rollout_user_turns", return_value=[user_turn("receipt-turn", desktop.call[1])]), \
-             patch.object(bridge, "DesktopIpc") as new_desktop:
+             patch.object(bridge, "DesktopIpc") as new_desktop, \
+             patch.object(bridge, "wait_for_completed", return_value="已记录") as wait:
             self.assertEqual(bridge.post_manual_delivery_receipt("manual:turn-1", record),
                              "receipt-turn")
             new_desktop.assert_not_called()
+            wait.assert_called_once_with("thread-1", "receipt-turn", 120)
 
     def test_receipt_retry_never_resends_feishu_message(self):
         record = {"manual_reply": True, "answer": "请先提供截图。", "sent": True,
